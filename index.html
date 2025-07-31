@@ -318,7 +318,14 @@
       shareButton.style.display = 'inline-block';
       shareButton.onclick = () => {
         const emojiMap = { correct: '🟩', misplaced: '🟨', wrong: '⬛' };
-        const emojiGrid = allGuesses.slice(0, guessCount).map(row => row.map(r => emojiMap[r]).join('')).join('\n');
+        const emojiGrid = allGuesses.slice(0, guessCount + 1).map((row, i) => {
+          if (!row) return '';
+          if (won && i === guessCount) {
+            return '🟩'.repeat(answer.length);
+          }
+          return row.map(r => emojiMap[r]).join('');
+        }).join('\n');
+
         const scoreLine = `🧩 Positionle ${positionIndex + 1} ${guessCount + 1}/${maxGuesses}`;
         const result = `${scoreLine}\n\n${emojiGrid}\n\nPlay here:\nhttps://positionle.com/`;
 
