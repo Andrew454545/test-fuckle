@@ -101,34 +101,22 @@
     .key.misplaced { background-color: #c9b458; }
     .key.wrong { background-color: #787c7e; }
 
-    #shareBtn {
+    #shareButton {
       margin-top: 20px;
       padding: 10px 20px;
       font-size: 16px;
-      background-color: #6aaa64;
-      border: none;
-      border-radius: 5px;
-      color: white;
-      cursor: pointer;
-    }
-
-    #shareOutput {
-      white-space: pre-wrap;
-      color: #6aaa64;
-      margin-top: 10px;
+      display: none;
     }
   </style>
 </head>
 <body>
-  <h1>🥉 Positionle: Guess the Position</h1>
+  <h1>🤹 Positionle: Guess the Position</h1>
   <div style="display: flex; justify-content: center; align-items: flex-start; gap: 30px;">
     <img id="positionImage" src="" alt="Today's position image">
     <div class="tile-board" id="tileBoard"></div>
   </div>
   <div class="keyboard" id="keyboard"></div>
-
-  <button id="shareBtn">Share</button>
-  <pre id="shareOutput"></pre>
+  <button id="shareButton">Share Result</button>
 
   <script>
     const maxGuesses = 5;
@@ -141,7 +129,7 @@
     const letterStatus = {};
     let currentGuess = '';
     let positionLink = null;
-    let dayIndex = 573;
+    let positionIndex = 0;
 
     function normalize(str) {
       return str.normalize("NFKD")
@@ -154,10 +142,9 @@
     async function loadGame() {
       const res = await fetch('positions_metadata.json');
       const data = await res.json();
-      const index = hashString(todayStr) % data.length;
-      dayIndex = 1 + index;
-      const position = data[index];
-      console.log('test', position);
+      positionIndex = hashString(todayStr) % data.length;
+      const position = data[positionIndex];
+
       answerTitle = position.title;
       answer = normalize(position.title);
       document.getElementById('positionImage').src = position.image_url;
@@ -322,37 +309,17 @@
         link.style.color = '#66f';
         document.body.appendChild(link);
       }
-    }
 
-    document.getElementById('shareBtn').addEventListener('click', () => {
-      const tiles = [];
-      for (let i = 0; i < guessCount; i++) {
-        const row = [];
-        for (let j = 0; j < answer.length; j++) {
-          const tile = document.getElementById(`tile-${i}-${j}`);
-          const back = tile?.querySelector('.flip-back');
-          if (back?.classList.contains('correct')) {
-            row.push('🟩');
-          } else if (back?.classList.contains('misplaced')) {
-            row.push('🟨');
-          } else {
-            row.push('⬛');
-          }
-        }
-        tiles.push(row.join(''));
-      }
-
-      const result = `🧩 Positionle ${dayIndex} ${guessCount}/${maxGuesses}\n\n${tiles.join('\n')}\n\nPlay here:\nhttps://positionle.com/`;
-
-      if (navigator.share) {
-        navigator.share({ text: result }).catch(err => console.error('Share failed:', err));
-      } else {
+      // Share button logic
+      const shareButton = document.getElementById('shareButton');
+      shareButton.style.display = 'inline-block';
+      shareButton.onclick = () => {
+        const result = `🧩 Positionle ${positionIndex + 1} ${guessCount}/${maxGuesses}\n\nPlay here:\nhttps://positionle.com/`;
         navigator.clipboard.writeText(result).then(() => {
-          document.getElementById('shareOutput').textContent = result;
-          alert('Copied result to clipboard!');
+          alert('Result copied to clipboard!');
         });
-      }
-    });
+      };
+    }
 
     document.addEventListener('keydown', (e) => {
       if (/^[a-zA-Z]$/.test(e.key)) {
