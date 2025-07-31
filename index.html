@@ -100,6 +100,23 @@
     .key.correct { background-color: #6aaa64; }
     .key.misplaced { background-color: #c9b458; }
     .key.wrong { background-color: #787c7e; }
+
+    #shareBtn {
+      margin-top: 20px;
+      padding: 10px 20px;
+      font-size: 16px;
+      background-color: #6aaa64;
+      border: none;
+      border-radius: 5px;
+      color: white;
+      cursor: pointer;
+    }
+
+    #shareOutput {
+      white-space: pre-wrap;
+      color: #6aaa64;
+      margin-top: 10px;
+    }
   </style>
 </head>
 <body>
@@ -109,6 +126,9 @@
     <div class="tile-board" id="tileBoard"></div>
   </div>
   <div class="keyboard" id="keyboard"></div>
+
+  <button id="shareBtn">Share</button>
+  <pre id="shareOutput"></pre>
 
   <script>
     const maxGuesses = 5;
@@ -121,6 +141,7 @@
     const letterStatus = {};
     let currentGuess = '';
     let positionLink = null;
+    let dayIndex = 573;
 
     function normalize(str) {
       return str.normalize("NFKD")
@@ -134,8 +155,9 @@
       const res = await fetch('positions_metadata.json');
       const data = await res.json();
       const index = hashString(todayStr) % data.length;
+      dayIndex = 1 + index;
       const position = data[index];
-
+      console.log('test', position);
       answerTitle = position.title;
       answer = normalize(position.title);
       document.getElementById('positionImage').src = position.image_url;
@@ -301,6 +323,36 @@
         document.body.appendChild(link);
       }
     }
+
+    document.getElementById('shareBtn').addEventListener('click', () => {
+      const tiles = [];
+      for (let i = 0; i < guessCount; i++) {
+        const row = [];
+        for (let j = 0; j < answer.length; j++) {
+          const tile = document.getElementById(`tile-${i}-${j}`);
+          const back = tile?.querySelector('.flip-back');
+          if (back?.classList.contains('correct')) {
+            row.push('🟩');
+          } else if (back?.classList.contains('misplaced')) {
+            row.push('🟨');
+          } else {
+            row.push('⬛');
+          }
+        }
+        tiles.push(row.join(''));
+      }
+
+      const result = `🧩 Positionle ${dayIndex} ${guessCount}/${maxGuesses}\n\n${tiles.join('\n')}\n\nPlay here:\nhttps://positionle.com/`;
+
+      if (navigator.share) {
+        navigator.share({ text: result }).catch(err => console.error('Share failed:', err));
+      } else {
+        navigator.clipboard.writeText(result).then(() => {
+          document.getElementById('shareOutput').textContent = result;
+          alert('Copied result to clipboard!');
+        });
+      }
+    });
 
     document.addEventListener('keydown', (e) => {
       if (/^[a-zA-Z]$/.test(e.key)) {
