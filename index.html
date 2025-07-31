@@ -130,6 +130,7 @@
     let currentGuess = '';
     let positionLink = null;
     let positionIndex = 0;
+    const allGuesses = [];
 
     function normalize(str) {
       return str.normalize("NFKD")
@@ -212,6 +213,8 @@
           result[i] = 'wrong';
         }
       });
+
+      allGuesses[rowIndex] = result;
 
       guessArr.forEach((letter, i) => {
         const tile = document.getElementById(`tile-${rowIndex}-${i}`);
@@ -314,7 +317,11 @@
       const shareButton = document.getElementById('shareButton');
       shareButton.style.display = 'inline-block';
       shareButton.onclick = () => {
-        const result = `🧩 Positionle ${positionIndex + 1} ${guessCount}/${maxGuesses}\n\nPlay here:\nhttps://positionle.com/`;
+        const emojiMap = { correct: '🟩', misplaced: '🟨', wrong: '⬛' };
+        const emojiGrid = allGuesses.slice(0, guessCount).map(row => row.map(r => emojiMap[r]).join('')).join('\n');
+        const scoreLine = `🧩 Positionle ${positionIndex + 1} ${guessCount + 1}/${maxGuesses}`;
+        const result = `${scoreLine}\n\n${emojiGrid}\n\nPlay here:\nhttps://positionle.com/`;
+
         navigator.clipboard.writeText(result).then(() => {
           alert('Result copied to clipboard!');
         });
