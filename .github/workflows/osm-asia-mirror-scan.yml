@@ -1,0 +1,95 @@
+name: OSM Asia Mirror-Palindrome Scan
+
+on:
+  push:
+    branches:
+      - agent/osm-africa-mirror-palindrome-scan
+    paths:
+      - '.github/workflows/osm-asia-mirror-scan.yml'
+      - 'scripts/scan_mirror_palindromes.py'
+      - 'scripts/test_rules.py'
+      - 'requirements.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_URL: https://download.geofabrik.de/asia-latest.osm.pbf
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  exhaustive-asia-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends osmium-tool fontconfig fonts-noto-core fonts-noto-extra fonts-noto-cjk libicu-dev pkg-config
+          sudo apt-get clean
+          fc-cache -f
+          df -h
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install pinned Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python - <<'PY'
+          from PIL import features
+          import icu
+          print('RAQM:', features.check('raqm'))
+          print('ICU:', icu.ICU_VERSION)
+          assert features.check('raqm')
+          PY
+      - name: Run locked normalization tests
+        run: python scripts/test_rules.py
+      - name: Record source headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          curl --fail --silent --show-error --location --head "$SOURCE_URL" | tee artifacts/source_headers.txt
+          last_modified=$(awk 'BEGIN{IGNORECASE=1} /^last-modified:/ {sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' artifacts/source_headers.txt)
+          etag=$(awk 'BEGIN{IGNORECASE=1} /^etag:/ {sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' artifacts/source_headers.txt)
+          echo "SOURCE_LAST_MODIFIED=$last_modified" >> "$GITHUB_ENV"
+          echo "SOURCE_ETAG=$etag" >> "$GITHUB_ENV"
+      - name: Stream complete Asia PBF and retain every eligible settlement
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 8 --retry-all-errors --connect-timeout 30 "$SOURCE_URL" \
+            | tee >(sha256sum | awk '{print $1}' > artifacts/source_pbf.sha256) \
+            | osmium tags-filter -R -F pbf - 'nwr/place=city,town,village,hamlet,isolated_dwelling' -f pbf -o asia-settlements.osm.pbf
+          test -s asia-settlements.osm.pbf
+          SOURCE_SHA256=$(cat artifacts/source_pbf.sha256)
+          echo "SOURCE_SHA256=$SOURCE_SHA256" >> "$GITHUB_ENV"
+          sha256sum asia-settlements.osm.pbf | tee artifacts/settlements_pbf.sha256
+          osmium fileinfo -e asia-settlements.osm.pbf | tee artifacts/dataset_metadata.txt
+          df -h
+      - name: Exhaustively enumerate names, palindromes, and mirror renderings
+        shell: bash
+        run: |
+          set -o pipefail
+          python scripts/scan_mirror_palindromes.py asia-settlements.osm.pbf --out artifacts --min-len 9 2>&1 | tee artifacts/run.log
+      - name: Print candidate tables
+        if: always()
+        run: |
+          echo '=== manifest ==='
+          cat artifacts/scan_manifest.json 2>/dev/null || true
+          echo '=== all palindromes >=9 ==='
+          cat artifacts/all_palindromes_ge9.csv 2>/dev/null || true
+          echo '=== mirror passes ==='
+          cat artifacts/results.csv 2>/dev/null || true
+      - name: Upload exhaustive audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: asia-mirror-palindrome-audit
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30
