@@ -1,3 +1,4 @@
+# Force independent Planet completeness audit launch.
 # Trigger independent Planet completeness audit.
 # Candidate proof scan completed; reuse recognized workflow slot for independent extraction/completeness audit.
 name: OSM Planet Extraction Completeness Audit
