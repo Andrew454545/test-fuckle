@@ -1,0 +1,6 @@
+osmium==4.3.1
+regex==2026.7.19
+Pillow==12.3.0
+numpy==2.5.1
+fonttools==4.63.0
+PyICU==2.16.2
