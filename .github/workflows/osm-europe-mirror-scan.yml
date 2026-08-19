@@ -1,8 +1,5 @@
-# Force Oceania locality-inclusive scan launch 3.
-# Force Oceania locality-inclusive scan launch 2.
-# Force Oceania locality-inclusive scan launch.
-# Prior continental audits completed; reuse this recognized workflow slot for Oceania.
-name: OSM Oceania Mirror-Palindrome Scan
+# Continental audits complete; reuse the recognized workflow slot for the global Planet scan.
+name: OSM Planet Mirror-Palindrome Proof Scan
 
 on:
   push:
@@ -11,7 +8,7 @@ on:
     paths:
       - '.github/workflows/osm-europe-mirror-scan.yml'
       - 'scripts/scan_mirror_palindromes.py'
-      - 'scripts/scan_mirror_palindromes_with_localities.py'
+      - 'scripts/scan_mirror_palindromes_proof.py'
       - 'scripts/test_rules.py'
       - 'requirements.txt'
   pull_request:
@@ -20,7 +17,7 @@ on:
     paths:
       - '.github/workflows/osm-europe-mirror-scan.yml'
       - 'scripts/scan_mirror_palindromes.py'
-      - 'scripts/scan_mirror_palindromes_with_localities.py'
+      - 'scripts/scan_mirror_palindromes_proof.py'
       - 'scripts/test_rules.py'
       - 'requirements.txt'
   workflow_dispatch:
@@ -29,15 +26,18 @@ permissions:
   contents: read
 
 env:
-  SOURCE_URL: https://download.geofabrik.de/australia-oceania-latest.osm.pbf
+  # Frozen official OSM Planet snapshot dated 2026-08-10.
+  SOURCE_URL: https://planet.openstreetmap.org/pbf/planet-260810.osm.pbf
+  SOURCE_MD5_URL: https://planet.openstreetmap.org/pbf/planet-260810.osm.pbf.md5
   PYTHONUNBUFFERED: '1'
 
 jobs:
-  exhaustive-oceania-scan:
+  exhaustive-planet-scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
+
       - name: Install system dependencies
         timeout-minutes: 20
         env:
@@ -50,10 +50,12 @@ jobs:
           sudo apt-get clean
           timeout 3m fc-cache -f
           df -h
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: 'pip'
+
       - name: Install pinned Python dependencies
         run: |
           python -m pip install --upgrade pip
@@ -65,37 +67,54 @@ jobs:
           print('ICU:', icu.ICU_VERSION)
           assert features.check('raqm')
           PY
-      - name: Run locked normalization tests
+
+      - name: Run locked proof-rule tests
         run: python scripts/test_rules.py
-      - name: Record source headers
+
+      - name: Record frozen official Planet metadata
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p artifacts
           curl --fail --silent --show-error --location --head "$SOURCE_URL" | tee artifacts/source_headers.txt
+          curl --fail --silent --show-error --location "$SOURCE_MD5_URL" | tee artifacts/official_source.md5
           last_modified=$(awk 'BEGIN{IGNORECASE=1} /^last-modified:/ {sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' artifacts/source_headers.txt)
           etag=$(awk 'BEGIN{IGNORECASE=1} /^etag:/ {sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' artifacts/source_headers.txt)
           echo "SOURCE_LAST_MODIFIED=$last_modified" >> "$GITHUB_ENV"
           echo "SOURCE_ETAG=$etag" >> "$GITHUB_ENV"
-      - name: Stream complete Oceania PBF and retain every eligible settlement and locality
+
+      - name: Stream complete official Planet PBF and retain every eligible place
         shell: bash
         run: |
           set -euo pipefail
-          curl --fail --location --retry 8 --retry-all-errors --connect-timeout 30 "$SOURCE_URL" \
-            | tee >(sha256sum | awk '{print $1}' > artifacts/source_pbf.sha256) \
-            | osmium tags-filter -R -F pbf - 'nwr/place=city,town,village,hamlet,isolated_dwelling,locality' -f pbf -o oceania-settlements.osm.pbf
-          test -s oceania-settlements.osm.pbf
+          # The 88 GB Planet is never stored locally. One byte stream is hashed
+          # while osmium filters all six eligible place classes into a compact PBF.
+          curl --fail --location --connect-timeout 30 --speed-time 120 --speed-limit 1024 "$SOURCE_URL" \
+            | tee \
+                >(sha256sum | awk '{print $1}' > artifacts/source_pbf.sha256) \
+                >(md5sum | awk '{print $1}' > artifacts/source_pbf.md5) \
+            | osmium tags-filter -R -F pbf - 'nwr/place=city,town,village,hamlet,isolated_dwelling,locality' -f pbf -o planet-eligible-places.osm.pbf
+
+          test -s planet-eligible-places.osm.pbf
+          OFFICIAL_MD5=$(awk '{print $1}' artifacts/official_source.md5)
+          COMPUTED_MD5=$(cat artifacts/source_pbf.md5)
+          echo "official_md5=$OFFICIAL_MD5"
+          echo "computed_md5=$COMPUTED_MD5"
+          test "$OFFICIAL_MD5" = "$COMPUTED_MD5"
+
           SOURCE_SHA256=$(cat artifacts/source_pbf.sha256)
           echo "SOURCE_SHA256=$SOURCE_SHA256" >> "$GITHUB_ENV"
-          sha256sum oceania-settlements.osm.pbf | tee artifacts/settlements_pbf.sha256
-          osmium fileinfo -e oceania-settlements.osm.pbf | tee artifacts/dataset_metadata.txt
+          sha256sum planet-eligible-places.osm.pbf | tee artifacts/eligible_places_pbf.sha256
+          osmium fileinfo -e planet-eligible-places.osm.pbf | tee artifacts/dataset_metadata.txt
           df -h
-      - name: Exhaustively enumerate names, palindromes, and mirror renderings
+
+      - name: Exhaustively enumerate proof-eligible names, palindromes, and mirror renderings
         shell: bash
         run: |
           set -o pipefail
-          python scripts/scan_mirror_palindromes_with_localities.py oceania-settlements.osm.pbf --out artifacts --min-len 9 2>&1 | tee artifacts/run.log
-      - name: Print candidate tables
+          python scripts/scan_mirror_palindromes_proof.py planet-eligible-places.osm.pbf --out artifacts --min-len 9 2>&1 | tee artifacts/run.log
+
+      - name: Print audit tables
         if: always()
         run: |
           echo '=== manifest ==='
@@ -104,11 +123,12 @@ jobs:
           cat artifacts/all_palindromes_ge9.csv 2>/dev/null || true
           echo '=== mirror passes ==='
           cat artifacts/results.csv 2>/dev/null || true
-      - name: Upload exhaustive audit artifact
+
+      - name: Upload global Planet audit artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: oceania-localities-mirror-palindrome-audit
+          name: planet-260810-proof-mirror-palindrome-audit
           path: artifacts/
           if-no-files-found: error
           retention-days: 30
