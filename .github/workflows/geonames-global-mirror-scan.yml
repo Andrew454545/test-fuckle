@@ -10,6 +10,14 @@ on:
       - 'scripts/scan_geonames_mirror_palindromes.py'
       - 'scripts/scan_mirror_palindromes.py'
       - 'requirements.txt'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/geonames-global-mirror-scan.yml'
+      - 'scripts/scan_geonames_mirror_palindromes.py'
+      - 'scripts/scan_mirror_palindromes.py'
+      - 'requirements.txt'
   workflow_dispatch:
 
 permissions:
