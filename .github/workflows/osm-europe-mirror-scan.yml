@@ -1,5 +1,5 @@
-# Force fixed Europe rerun
-name: OSM Europe Mirror-Palindrome Scan
+# Europe audit completed; reuse this recognized workflow slot for the next continental scan.
+name: OSM North-Central America + Caribbean Mirror-Palindrome Scan
 
 on:
   push:
@@ -26,11 +26,13 @@ permissions:
   contents: read
 
 env:
-  SOURCE_URL: https://download.geofabrik.de/europe-latest.osm.pbf
+  NORTH_AMERICA_URL: https://download.geofabrik.de/north-america-latest.osm.pbf
+  CENTRAL_AMERICA_URL: https://download.geofabrik.de/central-america-latest.osm.pbf
+  SOURCE_URL: https://download.geofabrik.de/north-america-latest.osm.pbf + https://download.geofabrik.de/central-america-latest.osm.pbf
   PYTHONUNBUFFERED: '1'
 
 jobs:
-  exhaustive-europe-scan:
+  exhaustive-north-central-america-caribbean-scan:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
@@ -41,8 +43,6 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           set -euo pipefail
-          # GitHub's Ubuntu image normally routes apt through an Azure mirror list.
-          # Force the canonical Ubuntu archive to avoid runners hanging on azure.archive.ubuntu.com.
           echo 'https://archive.ubuntu.com/ubuntu' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
           sudo timeout 10m apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
           sudo timeout 15m apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends osmium-tool fontconfig fonts-noto-core fonts-noto-extra fonts-noto-cjk libicu-dev pkg-config
@@ -71,29 +71,39 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p artifacts
-          curl --fail --silent --show-error --location --head "$SOURCE_URL" | tee artifacts/source_headers.txt
-          last_modified=$(awk 'BEGIN{IGNORECASE=1} /^last-modified:/ {sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' artifacts/source_headers.txt)
-          etag=$(awk 'BEGIN{IGNORECASE=1} /^etag:/ {sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' artifacts/source_headers.txt)
-          echo "SOURCE_LAST_MODIFIED=$last_modified" >> "$GITHUB_ENV"
-          echo "SOURCE_ETAG=$etag" >> "$GITHUB_ENV"
-      - name: Stream complete Europe PBF and retain every eligible settlement and locality
+          : > artifacts/source_headers.txt
+          for pair in "north-america|$NORTH_AMERICA_URL" "central-america|$CENTRAL_AMERICA_URL"; do
+            label=${pair%%|*}
+            url=${pair#*|}
+            echo "=== $label ===" | tee -a artifacts/source_headers.txt
+            curl --fail --silent --show-error --location --head "$url" | tee -a artifacts/source_headers.txt
+          done
+          echo "SOURCE_LAST_MODIFIED=see artifacts/source_headers.txt" >> "$GITHUB_ENV"
+          echo "SOURCE_ETAG=see artifacts/source_headers.txt" >> "$GITHUB_ENV"
+      - name: Stream complete North America and Central America/Caribbean PBFs and retain every eligible settlement and locality
         shell: bash
         run: |
           set -euo pipefail
-          curl --fail --location --retry 8 --retry-all-errors --connect-timeout 30 "$SOURCE_URL" \
-            | tee >(sha256sum | awk '{print $1}' > artifacts/source_pbf.sha256) \
-            | osmium tags-filter -R -F pbf - 'nwr/place=city,town,village,hamlet,isolated_dwelling,locality' -f pbf -o europe-settlements.osm.pbf
-          test -s europe-settlements.osm.pbf
-          SOURCE_SHA256=$(cat artifacts/source_pbf.sha256)
+          curl --fail --location --retry 8 --retry-all-errors --connect-timeout 30 "$NORTH_AMERICA_URL" \
+            | tee >(sha256sum | awk '{print $1 "  north-america-latest.osm.pbf"}' > artifacts/north-america-source.sha256) \
+            | osmium tags-filter -R -F pbf - 'nwr/place=city,town,village,hamlet,isolated_dwelling,locality' -f pbf -o north-america-settlements.osm.pbf
+          curl --fail --location --retry 8 --retry-all-errors --connect-timeout 30 "$CENTRAL_AMERICA_URL" \
+            | tee >(sha256sum | awk '{print $1 "  central-america-latest.osm.pbf"}' > artifacts/central-america-source.sha256) \
+            | osmium tags-filter -R -F pbf - 'nwr/place=city,town,village,hamlet,isolated_dwelling,locality' -f pbf -o central-america-settlements.osm.pbf
+          test -s north-america-settlements.osm.pbf
+          test -s central-america-settlements.osm.pbf
+          cat artifacts/north-america-source.sha256 artifacts/central-america-source.sha256 | tee artifacts/source_pbf.sha256
+          SOURCE_SHA256=$(sha256sum artifacts/source_pbf.sha256 | awk '{print $1}')
           echo "SOURCE_SHA256=$SOURCE_SHA256" >> "$GITHUB_ENV"
-          sha256sum europe-settlements.osm.pbf | tee artifacts/settlements_pbf.sha256
-          osmium fileinfo -e europe-settlements.osm.pbf | tee artifacts/dataset_metadata.txt
+          osmium merge north-america-settlements.osm.pbf central-america-settlements.osm.pbf -o north-central-america-caribbean-settlements.osm.pbf
+          sha256sum north-central-america-caribbean-settlements.osm.pbf | tee artifacts/settlements_pbf.sha256
+          osmium fileinfo -e north-central-america-caribbean-settlements.osm.pbf | tee artifacts/dataset_metadata.txt
           df -h
       - name: Exhaustively enumerate names, palindromes, and mirror renderings
         shell: bash
         run: |
           set -o pipefail
-          python scripts/scan_mirror_palindromes_with_localities.py europe-settlements.osm.pbf --out artifacts --min-len 9 2>&1 | tee artifacts/run.log
+          python scripts/scan_mirror_palindromes_with_localities.py north-central-america-caribbean-settlements.osm.pbf --out artifacts --min-len 9 2>&1 | tee artifacts/run.log
       - name: Print candidate tables
         if: always()
         run: |
@@ -107,7 +117,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: europe-localities-mirror-palindrome-audit
+          name: north-central-america-caribbean-localities-mirror-palindrome-audit
           path: artifacts/
           if-no-files-found: error
           retention-days: 30
