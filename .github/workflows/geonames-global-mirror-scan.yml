@@ -1,3 +1,4 @@
+# Trigger exhaustive GeoNames all-feature scan.
 name: GeoNames Global All-Feature Mirror-Palindrome Scan
 
 on:
