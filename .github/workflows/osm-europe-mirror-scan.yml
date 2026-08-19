@@ -1,5 +1,5 @@
-# Continental audits complete; reuse the recognized workflow slot for the global Planet scan.
-name: OSM Planet Mirror-Palindrome Proof Scan
+# Candidate proof scan completed; reuse recognized workflow slot for independent extraction/completeness audit.
+name: OSM Planet Extraction Completeness Audit
 
 on:
   push:
@@ -7,38 +7,32 @@ on:
       - agent/osm-africa-mirror-palindrome-scan
     paths:
       - '.github/workflows/osm-europe-mirror-scan.yml'
-      - 'scripts/scan_mirror_palindromes.py'
-      - 'scripts/scan_mirror_palindromes_proof.py'
-      - 'scripts/test_rules.py'
-      - 'requirements.txt'
+      - 'scripts/audit_planet_extraction_opl.py'
   pull_request:
     branches:
       - main
     paths:
       - '.github/workflows/osm-europe-mirror-scan.yml'
-      - 'scripts/scan_mirror_palindromes.py'
-      - 'scripts/scan_mirror_palindromes_proof.py'
-      - 'scripts/test_rules.py'
-      - 'requirements.txt'
+      - 'scripts/audit_planet_extraction_opl.py'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 env:
-  # Frozen official OSM Planet snapshot dated 2026-08-10.
   SOURCE_URL: https://planet.openstreetmap.org/pbf/planet-260810.osm.pbf
   SOURCE_MD5_URL: https://planet.openstreetmap.org/pbf/planet-260810.osm.pbf.md5
+  EXPECTED_SOURCE_SHA256: 1c3b456bbf66e853d83316593c9c73763753326115ac831fe006906b50f119db
   PYTHONUNBUFFERED: '1'
 
 jobs:
-  exhaustive-planet-scan:
+  independent-extraction-completeness-audit:
     runs-on: ubuntu-latest
     timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - name: Install independent audit dependencies
         timeout-minutes: 20
         env:
           DEBIAN_FRONTEND: noninteractive
@@ -46,89 +40,118 @@ jobs:
           set -euo pipefail
           echo 'https://archive.ubuntu.com/ubuntu' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
           sudo timeout 10m apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
-          sudo timeout 15m apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends osmium-tool fontconfig fonts-noto-core fonts-noto-extra fonts-noto-cjk libicu-dev pkg-config
+          sudo timeout 15m apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends osmium-tool
           sudo apt-get clean
-          timeout 3m fc-cache -f
-          df -h
+          osmium --version
+          python3 --version
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: 'pip'
-
-      - name: Install pinned Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
-          python - <<'PY'
-          from PIL import features
-          import icu
-          print('RAQM:', features.check('raqm'))
-          print('ICU:', icu.ICU_VERSION)
-          assert features.check('raqm')
-          PY
-
-      - name: Run locked proof-rule tests
-        run: python scripts/test_rules.py
-
-      - name: Record frozen official Planet metadata
+      - name: Record frozen official Planet checksum
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p artifacts
-          curl --fail --silent --show-error --location --head "$SOURCE_URL" | tee artifacts/source_headers.txt
           curl --fail --silent --show-error --location "$SOURCE_MD5_URL" | tee artifacts/official_source.md5
-          last_modified=$(awk 'BEGIN{IGNORECASE=1} /^last-modified:/ {sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' artifacts/source_headers.txt)
-          etag=$(awk 'BEGIN{IGNORECASE=1} /^etag:/ {sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' artifacts/source_headers.txt)
-          echo "SOURCE_LAST_MODIFIED=$last_modified" >> "$GITHUB_ENV"
-          echo "SOURCE_ETAG=$etag" >> "$GITHUB_ENV"
+          curl --fail --silent --show-error --location --head "$SOURCE_URL" | tee artifacts/source_headers.txt
 
-      - name: Stream complete official Planet PBF and retain every eligible place
+      - name: Independently enumerate all place-tagged objects and cross-check exact extraction
         shell: bash
         run: |
           set -euo pipefail
-          # The 88 GB Planet is never stored locally. One byte stream is hashed
-          # while osmium filters all six eligible place classes into a compact PBF.
-          curl --fail --location --connect-timeout 30 --speed-time 120 --speed-limit 1024 "$SOURCE_URL" \
-            | tee \
-                >(sha256sum | awk '{print $1}' > artifacts/source_pbf.sha256) \
-                >(md5sum | awk '{print $1}' > artifacts/source_pbf.md5) \
-            | osmium tags-filter -R -F pbf - 'nwr/place=city,town,village,hamlet,isolated_dwelling,locality' -f pbf -o planet-eligible-places.osm.pbf
+          rm -f broad.pipe md5.pipe sha.pipe
+          mkfifo broad.pipe md5.pipe sha.pipe
 
-          test -s planet-eligible-places.osm.pbf
+          # Independent branch A: select every object that has any place=* tag,
+          # then let our own OPL parser decide whether its value belongs to the six
+          # proof-eligible classes. This deliberately does not reuse the candidate
+          # scan's exact-value tags-filter predicate.
+          (
+            osmium tags-filter -R -F pbf broad.pipe 'nwr/place' -f opl \
+              | python3 scripts/audit_planet_extraction_opl.py \
+                  --label broad-place-key-audit \
+                  --out artifacts/broad_place_key_audit.json
+          ) &
+          BROAD_PID=$!
+
+          (md5sum < md5.pipe | awk '{print $1}' > artifacts/source_pbf.md5) &
+          MD5_PID=$!
+          (sha256sum < sha.pipe | awk '{print $1}' > artifacts/source_pbf.sha256) &
+          SHA_PID=$!
+
+          # Branch B repeats the exact candidate extraction predicate, but writes OPL
+          # and is counted by the independent parser rather than by the proof scanner.
+          curl --fail --location --connect-timeout 30 --speed-time 120 --speed-limit 1024 "$SOURCE_URL" \
+            | tee broad.pipe md5.pipe sha.pipe \
+            | osmium tags-filter -R -F pbf - 'nwr/place=city,town,village,hamlet,isolated_dwelling,locality' -f opl \
+            | python3 scripts/audit_planet_extraction_opl.py \
+                --label exact-value-extraction-audit \
+                --out artifacts/exact_value_audit.json
+
+          wait "$BROAD_PID"
+          wait "$MD5_PID"
+          wait "$SHA_PID"
+          rm -f broad.pipe md5.pipe sha.pipe
+
           OFFICIAL_MD5=$(awk '{print $1}' artifacts/official_source.md5)
           COMPUTED_MD5=$(cat artifacts/source_pbf.md5)
+          COMPUTED_SHA256=$(cat artifacts/source_pbf.sha256)
           echo "official_md5=$OFFICIAL_MD5"
           echo "computed_md5=$COMPUTED_MD5"
+          echo "computed_sha256=$COMPUTED_SHA256"
           test "$OFFICIAL_MD5" = "$COMPUTED_MD5"
+          test "$EXPECTED_SOURCE_SHA256" = "$COMPUTED_SHA256"
 
-          SOURCE_SHA256=$(cat artifacts/source_pbf.sha256)
-          echo "SOURCE_SHA256=$SOURCE_SHA256" >> "$GITHUB_ENV"
-          sha256sum planet-eligible-places.osm.pbf | tee artifacts/eligible_places_pbf.sha256
-          osmium fileinfo -e planet-eligible-places.osm.pbf | tee artifacts/dataset_metadata.txt
-          df -h
-
-      - name: Exhaustively enumerate proof-eligible names, palindromes, and mirror renderings
+      - name: Compare independent counts and digests to candidate proof scan
         shell: bash
         run: |
-          set -o pipefail
-          python scripts/scan_mirror_palindromes_proof.py planet-eligible-places.osm.pbf --out artifacts --min-len 9 2>&1 | tee artifacts/run.log
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
 
-      - name: Print audit tables
-        if: always()
-        run: |
-          echo '=== manifest ==='
-          cat artifacts/scan_manifest.json 2>/dev/null || true
-          echo '=== all palindromes >=9 ==='
-          cat artifacts/all_palindromes_ge9.csv 2>/dev/null || true
-          echo '=== mirror passes ==='
-          cat artifacts/results.csv 2>/dev/null || true
+          broad = json.loads(Path('artifacts/broad_place_key_audit.json').read_text())
+          exact = json.loads(Path('artifacts/exact_value_audit.json').read_text())
 
-      - name: Upload global Planet audit artifact
+          expected = {
+              'total': 6848208,
+              'place:city': 15457,
+              'place:town': 117312,
+              'place:village': 1764943,
+              'place:hamlet': 2122014,
+              'place:isolated_dwelling': 859088,
+              'place:locality': 1969394,
+              'osm_type:node': 6466683,
+              'osm_type:way': 225865,
+              'osm_type:relation': 155660,
+          }
+
+          report = {
+              'candidate_proof_expected_counts': expected,
+              'broad_place_key_counts': broad['eligible_counts'],
+              'exact_value_counts': exact['eligible_counts'],
+              'broad_digest': broad['eligible_ordered_object_digest_sha256'],
+              'exact_digest': exact['eligible_ordered_object_digest_sha256'],
+              'broad_duplicates': broad['duplicate_object_visits'],
+              'exact_duplicates': exact['duplicate_object_visits'],
+          }
+
+          assert broad['duplicate_object_visits'] == 0, report
+          assert exact['duplicate_object_visits'] == 0, report
+          assert broad['eligible_counts'] == expected, report
+          assert exact['eligible_counts'] == expected, report
+          assert broad['eligible_unique_objects'] == expected['total'], report
+          assert exact['eligible_unique_objects'] == expected['total'], report
+          assert broad['eligible_ordered_object_digest_sha256'] == exact['eligible_ordered_object_digest_sha256'], report
+
+          report['status'] = 'PASS'
+          Path('artifacts/completeness_comparison.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(report, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload independent completeness audit
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: planet-260810-proof-mirror-palindrome-audit
+          name: planet-260810-independent-extraction-completeness-audit
           path: artifacts/
           if-no-files-found: error
           retention-days: 30
