@@ -1,3 +1,4 @@
+# Trigger independent Planet completeness audit.
 # Candidate proof scan completed; reuse recognized workflow slot for independent extraction/completeness audit.
 name: OSM Planet Extraction Completeness Audit
 
@@ -31,7 +32,6 @@ jobs:
     timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
-
       - name: Install independent audit dependencies
         timeout-minutes: 20
         env:
@@ -44,7 +44,6 @@ jobs:
           sudo apt-get clean
           osmium --version
           python3 --version
-
       - name: Record frozen official Planet checksum
         shell: bash
         run: |
@@ -52,45 +51,27 @@ jobs:
           mkdir -p artifacts
           curl --fail --silent --show-error --location "$SOURCE_MD5_URL" | tee artifacts/official_source.md5
           curl --fail --silent --show-error --location --head "$SOURCE_URL" | tee artifacts/source_headers.txt
-
       - name: Independently enumerate all place-tagged objects and cross-check exact extraction
         shell: bash
         run: |
           set -euo pipefail
           rm -f broad.pipe md5.pipe sha.pipe
           mkfifo broad.pipe md5.pipe sha.pipe
-
-          # Independent branch A: select every object that has any place=* tag,
-          # then let our own OPL parser decide whether its value belongs to the six
-          # proof-eligible classes. This deliberately does not reuse the candidate
-          # scan's exact-value tags-filter predicate.
           (
             osmium tags-filter -R -F pbf broad.pipe 'nwr/place' -f opl \
-              | python3 scripts/audit_planet_extraction_opl.py \
-                  --label broad-place-key-audit \
-                  --out artifacts/broad_place_key_audit.json
+              | python3 scripts/audit_planet_extraction_opl.py --label broad-place-key-audit --out artifacts/broad_place_key_audit.json
           ) &
           BROAD_PID=$!
-
-          (md5sum < md5.pipe | awk '{print $1}' > artifacts/source_pbf.md5) &
-          MD5_PID=$!
-          (sha256sum < sha.pipe | awk '{print $1}' > artifacts/source_pbf.sha256) &
-          SHA_PID=$!
-
-          # Branch B repeats the exact candidate extraction predicate, but writes OPL
-          # and is counted by the independent parser rather than by the proof scanner.
+          (md5sum < md5.pipe | awk '{print $1}' > artifacts/source_pbf.md5) & MD5_PID=$!
+          (sha256sum < sha.pipe | awk '{print $1}' > artifacts/source_pbf.sha256) & SHA_PID=$!
           curl --fail --location --connect-timeout 30 --speed-time 120 --speed-limit 1024 "$SOURCE_URL" \
             | tee broad.pipe md5.pipe sha.pipe \
             | osmium tags-filter -R -F pbf - 'nwr/place=city,town,village,hamlet,isolated_dwelling,locality' -f opl \
-            | python3 scripts/audit_planet_extraction_opl.py \
-                --label exact-value-extraction-audit \
-                --out artifacts/exact_value_audit.json
-
+            | python3 scripts/audit_planet_extraction_opl.py --label exact-value-extraction-audit --out artifacts/exact_value_audit.json
           wait "$BROAD_PID"
           wait "$MD5_PID"
           wait "$SHA_PID"
           rm -f broad.pipe md5.pipe sha.pipe
-
           OFFICIAL_MD5=$(awk '{print $1}' artifacts/official_source.md5)
           COMPUTED_MD5=$(cat artifacts/source_pbf.md5)
           COMPUTED_SHA256=$(cat artifacts/source_pbf.sha256)
@@ -99,7 +80,6 @@ jobs:
           echo "computed_sha256=$COMPUTED_SHA256"
           test "$OFFICIAL_MD5" = "$COMPUTED_MD5"
           test "$EXPECTED_SOURCE_SHA256" = "$COMPUTED_SHA256"
-
       - name: Compare independent counts and digests to candidate proof scan
         shell: bash
         run: |
@@ -107,10 +87,8 @@ jobs:
           python3 - <<'PY'
           import json
           from pathlib import Path
-
           broad = json.loads(Path('artifacts/broad_place_key_audit.json').read_text())
           exact = json.loads(Path('artifacts/exact_value_audit.json').read_text())
-
           expected = {
               'total': 6848208,
               'place:city': 15457,
@@ -123,7 +101,6 @@ jobs:
               'osm_type:way': 225865,
               'osm_type:relation': 155660,
           }
-
           report = {
               'candidate_proof_expected_counts': expected,
               'broad_place_key_counts': broad['eligible_counts'],
@@ -133,7 +110,6 @@ jobs:
               'broad_duplicates': broad['duplicate_object_visits'],
               'exact_duplicates': exact['duplicate_object_visits'],
           }
-
           assert broad['duplicate_object_visits'] == 0, report
           assert exact['duplicate_object_visits'] == 0, report
           assert broad['eligible_counts'] == expected, report
@@ -141,12 +117,10 @@ jobs:
           assert broad['eligible_unique_objects'] == expected['total'], report
           assert exact['eligible_unique_objects'] == expected['total'], report
           assert broad['eligible_ordered_object_digest_sha256'] == exact['eligible_ordered_object_digest_sha256'], report
-
           report['status'] = 'PASS'
           Path('artifacts/completeness_comparison.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
           print(json.dumps(report, indent=2, sort_keys=True))
           PY
-
       - name: Upload independent completeness audit
         if: always()
         uses: actions/upload-artifact@v4
