@@ -1,0 +1,43 @@
+name: NGA GNS Whole-World Mirror-Palindrome Rerun
+
+on:
+  push:
+    branches: [agent/osm-africa-mirror-palindrome-scan]
+    paths:
+      - '.github/workflows/nga-gns-rest-rerun.yml'
+      - 'scripts/scan_nga_gns_rest.py'
+      - 'scripts/scan_mirror_palindromes.py'
+      - 'requirements.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  nga-gns-whole-world:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install rendering dependencies
+        run: |
+          set -euo pipefail
+          echo 'https://archive.ubuntu.com/ubuntu' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          sudo timeout 10m apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo timeout 15m apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends fontconfig fonts-noto-core fonts-noto-extra fonts-noto-cjk libicu-dev pkg-config
+          python -m pip install -r requirements.txt
+      - name: Scan complete NGA GNS through official whole-world REST layer
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/gns
+          python scripts/scan_nga_gns_rest.py --out artifacts/gns 2>&1 | tee artifacts/gns/run.log
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nga-gns-whole-world-multilingual-historical-mirror-audit-rest
+          path: artifacts/gns/
+          retention-days: 30
+          if-no-files-found: error
