@@ -1,3 +1,4 @@
+# Fix GeoNames V2 archive packaging (drop bundled language-code reference file before scan).
 # Trigger GeoNames global all-feature scan 3.
 # Trigger GeoNames global all-feature scan 2.
 # Reuse recognized workflow slot for exhaustive GeoNames all-feature scan.
@@ -78,6 +79,11 @@ jobs:
           curl --fail --silent --show-error --location --head "$ALT_NAMES_URL" > artifacts/geonames/alternateNamesV2_headers.txt
           unzip -t geonames/allCountries.zip
           unzip -t geonames/alternateNamesV2.zip
+          # GeoNames V2 now bundles iso-languagecodes.txt alongside the actual data file.
+          # Preserve the downloaded archive checksum above, then remove only that reference member
+          # so the scanner's one-data-file invariant still holds.
+          zip -d geonames/alternateNamesV2.zip iso-languagecodes.txt
+          unzip -l geonames/alternateNamesV2.zip
           df -h
       - name: Exhaustively scan every GeoNames feature and current language name
         shell: bash
