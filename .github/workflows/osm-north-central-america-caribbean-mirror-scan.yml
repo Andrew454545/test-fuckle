@@ -1,3 +1,4 @@
+# Trigger locality-inclusive North/Central America + Caribbean scan
 name: OSM North-Central America + Caribbean Mirror-Palindrome Scan
 
 on:
