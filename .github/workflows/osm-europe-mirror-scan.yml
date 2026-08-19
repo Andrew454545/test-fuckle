@@ -1,3 +1,4 @@
+# Force South America scan launch 2.
 # Trigger South America locality-inclusive scan.
 # Prior continental audits completed; reuse this recognized workflow slot for South America.
 name: OSM South America Mirror-Palindrome Scan
