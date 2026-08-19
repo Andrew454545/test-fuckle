@@ -1,3 +1,4 @@
+# Locality-inclusive rerun trigger
 name: OSM Asia Mirror-Palindrome Scan
 
 on:
