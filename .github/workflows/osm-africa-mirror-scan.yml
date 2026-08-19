@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/osm-africa-mirror-scan.yml'
       - 'scripts/scan_mirror_palindromes.py'
+      - 'scripts/scan_mirror_palindromes_with_localities.py'
       - 'scripts/test_rules.py'
       - 'requirements.txt'
   pull_request:
@@ -15,6 +16,7 @@ on:
     paths:
       - '.github/workflows/osm-africa-mirror-scan.yml'
       - 'scripts/scan_mirror_palindromes.py'
+      - 'scripts/scan_mirror_palindromes_with_localities.py'
       - 'scripts/test_rules.py'
       - 'requirements.txt'
   workflow_dispatch:
@@ -66,13 +68,13 @@ jobs:
           etag=$(awk 'BEGIN{IGNORECASE=1} /^etag:/ {sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' artifacts/source_headers.txt)
           echo "SOURCE_LAST_MODIFIED=$last_modified" >> "$GITHUB_ENV"
           echo "SOURCE_ETAG=$etag" >> "$GITHUB_ENV"
-      - name: Stream complete Africa PBF and retain every eligible settlement
+      - name: Stream complete Africa PBF and retain every eligible settlement and locality
         shell: bash
         run: |
           set -euo pipefail
           curl --fail --location --retry 8 --retry-all-errors --connect-timeout 30 "$SOURCE_URL" \
             | tee >(sha256sum | awk '{print $1}' > artifacts/source_pbf.sha256) \
-            | osmium tags-filter -R -F pbf - 'nwr/place=city,town,village,hamlet,isolated_dwelling' -f pbf -o africa-settlements.osm.pbf
+            | osmium tags-filter -R -F pbf - 'nwr/place=city,town,village,hamlet,isolated_dwelling,locality' -f pbf -o africa-settlements.osm.pbf
           test -s africa-settlements.osm.pbf
           SOURCE_SHA256=$(cat artifacts/source_pbf.sha256)
           echo "SOURCE_SHA256=$SOURCE_SHA256" >> "$GITHUB_ENV"
@@ -83,7 +85,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          python scripts/scan_mirror_palindromes.py africa-settlements.osm.pbf --out artifacts --min-len 9 2>&1 | tee artifacts/run.log
+          python scripts/scan_mirror_palindromes_with_localities.py africa-settlements.osm.pbf --out artifacts --min-len 9 2>&1 | tee artifacts/run.log
       - name: Print candidate tables
         if: always()
         run: |
@@ -97,7 +99,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: africa-mirror-palindrome-audit
+          name: africa-localities-mirror-palindrome-audit
           path: artifacts/
           if-no-files-found: error
           retention-days: 30
