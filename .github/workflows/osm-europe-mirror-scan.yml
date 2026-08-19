@@ -1,3 +1,4 @@
+# Trigger corrected visual GeoNames scan.
 # Rerun GeoNames global all-feature scan with visual mirror tolerance.
 # Fix GeoNames V2 archive packaging (drop bundled language-code reference file before scan).
 # Trigger GeoNames global all-feature scan 3.
