@@ -1,0 +1,109 @@
+name: GeoNames Global All-Feature Mirror-Palindrome Scan
+
+on:
+  push:
+    branches:
+      - agent/osm-africa-mirror-palindrome-scan
+    paths:
+      - '.github/workflows/geonames-global-mirror-scan.yml'
+      - 'scripts/scan_geonames_mirror_palindromes.py'
+      - 'scripts/scan_mirror_palindromes.py'
+      - 'requirements.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ALL_COUNTRIES_URL: https://download.geonames.org/export/dump/allCountries.zip
+  ALT_NAMES_URL: https://download.geonames.org/export/dump/alternateNamesV2.zip
+  COUNTRY_INFO_URL: https://download.geonames.org/export/dump/countryInfo.txt
+  FEATURE_CODES_URL: https://download.geonames.org/export/dump/featureCodes_en.txt
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  exhaustive-geonames-global-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install rendering dependencies
+        timeout-minutes: 20
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          echo 'https://archive.ubuntu.com/ubuntu' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          sudo timeout 10m apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo timeout 15m apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends fontconfig fonts-noto-core fonts-noto-extra fonts-noto-cjk libicu-dev pkg-config
+          sudo apt-get clean
+          timeout 3m fc-cache -f
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install pinned Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python - <<'PY'
+          from PIL import features
+          import icu
+          print('RAQM:', features.check('raqm'))
+          print('ICU:', icu.ICU_VERSION)
+          assert features.check('raqm')
+          PY
+
+      - name: Download complete GeoNames world gazetteer and language variants
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p geonames artifacts/geonames
+          for pair in \
+            "$ALL_COUNTRIES_URL geonames/allCountries.zip" \
+            "$ALT_NAMES_URL geonames/alternateNamesV2.zip" \
+            "$COUNTRY_INFO_URL geonames/countryInfo.txt" \
+            "$FEATURE_CODES_URL geonames/featureCodes_en.txt"
+          do
+            set -- $pair
+            curl --fail --location --retry 8 --retry-all-errors --connect-timeout 30 "$1" -o "$2"
+          done
+          sha256sum geonames/allCountries.zip geonames/alternateNamesV2.zip geonames/countryInfo.txt geonames/featureCodes_en.txt | tee artifacts/geonames/source_sha256.txt
+          curl --fail --silent --show-error --location --head "$ALL_COUNTRIES_URL" > artifacts/geonames/allCountries_headers.txt
+          curl --fail --silent --show-error --location --head "$ALT_NAMES_URL" > artifacts/geonames/alternateNamesV2_headers.txt
+          unzip -t geonames/allCountries.zip
+          unzip -t geonames/alternateNamesV2.zip
+          df -h
+
+      - name: Exhaustively scan every GeoNames feature and current language name
+        shell: bash
+        run: |
+          set -o pipefail
+          python scripts/scan_geonames_mirror_palindromes.py \
+            --all-countries geonames/allCountries.zip \
+            --alternate-names geonames/alternateNamesV2.zip \
+            --country-info geonames/countryInfo.txt \
+            --feature-codes geonames/featureCodes_en.txt \
+            --out artifacts/geonames 2>&1 | tee artifacts/geonames/run.log
+
+      - name: Print results and benchmark
+        if: always()
+        run: |
+          echo '=== manifest ==='
+          cat artifacts/geonames/scan_manifest.json 2>/dev/null || true
+          echo '=== mirror passes ==='
+          cat artifacts/geonames/results.csv 2>/dev/null || true
+          echo '=== OWOMOMOWO benchmark ==='
+          cat artifacts/geonames/owomomowo_benchmark.csv 2>/dev/null || true
+
+      - name: Upload exhaustive GeoNames audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: geonames-global-all-feature-mirror-palindrome-audit
+          path: artifacts/geonames/
+          if-no-files-found: error
+          retention-days: 30
