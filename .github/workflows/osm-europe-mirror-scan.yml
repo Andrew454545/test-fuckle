@@ -1,3 +1,4 @@
+# Trigger GeoNames global all-feature scan 2.
 # Reuse recognized workflow slot for exhaustive GeoNames all-feature scan.
 name: GeoNames Global All-Feature Mirror-Palindrome Scan
 
