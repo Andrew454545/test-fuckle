@@ -8,6 +8,7 @@ on:
     paths:
       - '.github/workflows/osm-asia-mirror-scan.yml'
       - 'scripts/scan_mirror_palindromes.py'
+      - 'scripts/scan_mirror_palindromes_with_localities.py'
       - 'scripts/test_rules.py'
       - 'requirements.txt'
   pull_request:
@@ -16,6 +17,7 @@ on:
     paths:
       - '.github/workflows/osm-asia-mirror-scan.yml'
       - 'scripts/scan_mirror_palindromes.py'
+      - 'scripts/scan_mirror_palindromes_with_localities.py'
       - 'scripts/test_rules.py'
       - 'requirements.txt'
   workflow_dispatch:
@@ -84,7 +86,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          python scripts/scan_mirror_palindromes.py asia-settlements.osm.pbf --out artifacts --min-len 9 2>&1 | tee artifacts/run.log
+          python scripts/scan_mirror_palindromes_with_localities.py asia-settlements.osm.pbf --out artifacts --min-len 9 2>&1 | tee artifacts/run.log
       - name: Print candidate tables
         if: always()
         run: |
