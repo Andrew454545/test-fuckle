@@ -1,3 +1,4 @@
+# Rerun GeoNames global all-feature scan with visual mirror tolerance.
 # Fix GeoNames V2 archive packaging (drop bundled language-code reference file before scan).
 # Trigger GeoNames global all-feature scan 3.
 # Trigger GeoNames global all-feature scan 2.
@@ -11,6 +12,7 @@ on:
     paths:
       - '.github/workflows/osm-europe-mirror-scan.yml'
       - 'scripts/scan_geonames_mirror_palindromes.py'
+      - 'scripts/run_geonames_visual_mirror_scan.py'
       - 'scripts/scan_mirror_palindromes.py'
       - 'requirements.txt'
   pull_request:
@@ -19,6 +21,7 @@ on:
     paths:
       - '.github/workflows/osm-europe-mirror-scan.yml'
       - 'scripts/scan_geonames_mirror_palindromes.py'
+      - 'scripts/run_geonames_visual_mirror_scan.py'
       - 'scripts/scan_mirror_palindromes.py'
       - 'requirements.txt'
   workflow_dispatch:
@@ -89,7 +92,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          python scripts/scan_geonames_mirror_palindromes.py \
+          python scripts/run_geonames_visual_mirror_scan.py \
             --all-countries geonames/allCountries.zip \
             --alternate-names geonames/alternateNamesV2.zip \
             --country-info geonames/countryInfo.txt \
