@@ -1,0 +1,37 @@
+name: NGA GNS Whole-World Mirror-Palindrome Recovery
+
+on:
+  push:
+    branches: [agent/osm-africa-mirror-palindrome-scan]
+    paths:
+      - '.github/workflows/nga-gns-recovery.yml'
+      - 'scripts/scan_nga_arcgis_names.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nga-gns-whole-world-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install rendering dependencies
+        run: |
+          set -euo pipefail
+          echo 'https://archive.ubuntu.com/ubuntu' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          sudo timeout 10m apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo timeout 15m apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends fontconfig fonts-noto-core fonts-noto-extra fonts-noto-cjk libicu-dev pkg-config
+          python -m pip install -r requirements.txt
+      - name: Scan official NGA GNS whole-world ArcGIS name-record service
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/gns-recovery
+          python scripts/scan_nga_arcgis_names.py --out artifacts/gns-recovery --workers 12 --page-size 3000 2>&1 | tee artifacts/gns-recovery/run.log
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nga-gns-whole-world-recovery-mirror-audit
+          path: artifacts/gns-recovery/
+          retention-days: 30
