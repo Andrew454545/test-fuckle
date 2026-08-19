@@ -1,7 +1,5 @@
-# Force South America scan launch 2.
-# Trigger South America locality-inclusive scan.
-# Prior continental audits completed; reuse this recognized workflow slot for South America.
-name: OSM South America Mirror-Palindrome Scan
+# Prior continental audits completed; reuse this recognized workflow slot for Oceania.
+name: OSM Oceania Mirror-Palindrome Scan
 
 on:
   push:
@@ -28,11 +26,11 @@ permissions:
   contents: read
 
 env:
-  SOURCE_URL: https://download.geofabrik.de/south-america-latest.osm.pbf
+  SOURCE_URL: https://download.geofabrik.de/australia-oceania-latest.osm.pbf
   PYTHONUNBUFFERED: '1'
 
 jobs:
-  exhaustive-south-america-scan:
+  exhaustive-oceania-scan:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
@@ -76,24 +74,24 @@ jobs:
           etag=$(awk 'BEGIN{IGNORECASE=1} /^etag:/ {sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' artifacts/source_headers.txt)
           echo "SOURCE_LAST_MODIFIED=$last_modified" >> "$GITHUB_ENV"
           echo "SOURCE_ETAG=$etag" >> "$GITHUB_ENV"
-      - name: Stream complete South America PBF and retain every eligible settlement and locality
+      - name: Stream complete Oceania PBF and retain every eligible settlement and locality
         shell: bash
         run: |
           set -euo pipefail
           curl --fail --location --retry 8 --retry-all-errors --connect-timeout 30 "$SOURCE_URL" \
             | tee >(sha256sum | awk '{print $1}' > artifacts/source_pbf.sha256) \
-            | osmium tags-filter -R -F pbf - 'nwr/place=city,town,village,hamlet,isolated_dwelling,locality' -f pbf -o south-america-settlements.osm.pbf
-          test -s south-america-settlements.osm.pbf
+            | osmium tags-filter -R -F pbf - 'nwr/place=city,town,village,hamlet,isolated_dwelling,locality' -f pbf -o oceania-settlements.osm.pbf
+          test -s oceania-settlements.osm.pbf
           SOURCE_SHA256=$(cat artifacts/source_pbf.sha256)
           echo "SOURCE_SHA256=$SOURCE_SHA256" >> "$GITHUB_ENV"
-          sha256sum south-america-settlements.osm.pbf | tee artifacts/settlements_pbf.sha256
-          osmium fileinfo -e south-america-settlements.osm.pbf | tee artifacts/dataset_metadata.txt
+          sha256sum oceania-settlements.osm.pbf | tee artifacts/settlements_pbf.sha256
+          osmium fileinfo -e oceania-settlements.osm.pbf | tee artifacts/dataset_metadata.txt
           df -h
       - name: Exhaustively enumerate names, palindromes, and mirror renderings
         shell: bash
         run: |
           set -o pipefail
-          python scripts/scan_mirror_palindromes_with_localities.py south-america-settlements.osm.pbf --out artifacts --min-len 9 2>&1 | tee artifacts/run.log
+          python scripts/scan_mirror_palindromes_with_localities.py oceania-settlements.osm.pbf --out artifacts --min-len 9 2>&1 | tee artifacts/run.log
       - name: Print candidate tables
         if: always()
         run: |
@@ -107,7 +105,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: south-america-localities-mirror-palindrome-audit
+          name: oceania-localities-mirror-palindrome-audit
           path: artifacts/
           if-no-files-found: error
           retention-days: 30
