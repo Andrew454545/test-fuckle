@@ -6,6 +6,12 @@ on:
     paths:
       - '.github/workflows/nga-gns-recovery.yml'
       - 'scripts/scan_nga_arcgis_names.py'
+      - 'scripts/scan_mirror_palindromes.py'
+      - 'requirements.txt'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/nga-gns-recovery.yml'
   workflow_dispatch:
 
 permissions:
@@ -17,7 +23,14 @@ jobs:
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
-      - name: Install rendering dependencies
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install rendering dependencies robustly
+        timeout-minutes: 25
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
           set -euo pipefail
           echo 'https://archive.ubuntu.com/ubuntu' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
@@ -35,3 +48,4 @@ jobs:
           name: nga-gns-whole-world-recovery-mirror-audit
           path: artifacts/gns-recovery/
           retention-days: 30
+          if-no-files-found: error
