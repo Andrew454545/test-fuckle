@@ -1,0 +1,98 @@
+name: OSM Current Planet All-Names Mirror Repair
+
+on:
+  push:
+    branches: [agent/osm-africa-mirror-palindrome-scan]
+    paths:
+      - '.github/workflows/osm-current-all-names-repair.yml'
+      - 'scripts/scan_osm_all_name_opl.py'
+      - 'scripts/scan_mirror_palindromes.py'
+      - 'requirements.txt'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/osm-current-all-names-repair.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: '1'
+  PLANET_URL: https://planet.openstreetmap.org/pbf/planet-260810.osm.pbf
+  PLANET_MD5_URL: https://planet.openstreetmap.org/pbf/planet-260810.osm.pbf.md5
+
+jobs:
+  osm-current-all-names-repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install scanner dependencies robustly
+        timeout-minutes: 25
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          echo 'https://archive.ubuntu.com/ubuntu' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          sudo timeout 10m apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo timeout 15m apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends osmium-tool fontconfig fonts-noto-core fonts-noto-extra fonts-noto-cjk libicu-dev pkg-config
+          python -m pip install -r requirements.txt
+      - name: Build exhaustive naming-key filter
+        run: |
+          cat > name_filters.txt <<'EOF'
+          nwr/name
+          nwr/name:*
+          nwr/official_name
+          nwr/official_name:*
+          nwr/loc_name
+          nwr/loc_name:*
+          nwr/alt_name
+          nwr/alt_name:*
+          nwr/short_name
+          nwr/short_name:*
+          nwr/int_name
+          nwr/int_name:*
+          nwr/nat_name
+          nwr/nat_name:*
+          nwr/reg_name
+          nwr/reg_name:*
+          nwr/old_name
+          nwr/old_name:*
+          nwr/historic_name
+          nwr/historic_name:*
+          nwr/former_name
+          nwr/former_name:*
+          nwr/previous_name
+          nwr/previous_name:*
+          nwr/was:name
+          nwr/was:name:*
+          nwr/was:official_name
+          nwr/was:official_name:*
+          EOF
+          sed -i 's/^          //' name_filters.txt
+      - name: Stream frozen Planet and scan every naming-key object
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/osm-current-all-names-repair
+          curl -fsSL "$PLANET_MD5_URL" | tee artifacts/osm-current-all-names-repair/official.md5
+          rm -f md5.pipe; mkfifo md5.pipe
+          (md5sum < md5.pipe | awk '{print $1}' > artifacts/osm-current-all-names-repair/computed.md5) & MPID=$!
+          curl -fL --retry 8 --retry-all-errors --connect-timeout 30 "$PLANET_URL" \
+            | tee md5.pipe \
+            | osmium tags-filter -R -F pbf -f opl -e name_filters.txt - \
+            | python scripts/scan_osm_all_name_opl.py --out artifacts/osm-current-all-names-repair --source-label OSM-current-260810-repair
+          wait "$MPID"; rm -f md5.pipe
+          test "$(awk '{print $1}' artifacts/osm-current-all-names-repair/official.md5)" = "$(cat artifacts/osm-current-all-names-repair/computed.md5)"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: osm-current-planet-all-name-keys-mirror-audit-repair
+          path: artifacts/osm-current-all-names-repair/
+          retention-days: 30
+          if-no-files-found: error
