@@ -1,0 +1,165 @@
+name: Consolidate 99pct Geographic-Name Mirror Proof
+
+on:
+  workflow_dispatch:
+    inputs:
+      osm_history_run_id:
+        description: Successful run containing frozen history-260810 broad-name repair
+        required: true
+        type: string
+      nga_run_id:
+        description: Successful run containing merged complete NGA GNS recovery
+        required: true
+        type: string
+      geonames_supplement_run_id:
+        description: Successful GeoNames asciiname/inline alternatenames supplement run
+        required: true
+        type: string
+      antarctica_run_id:
+        description: Successful USGS/BGN Antarctic Names run
+        required: true
+        type: string
+      gebco_run_id:
+        description: Successful IHO-IOC GEBCO/SCUFN run
+        required: true
+        type: string
+      gnis_safety_run_id:
+        description: Successful domestic GNIS ICU/punctuation safety supplement run
+        required: true
+        type: string
+
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  consolidate-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify immutable successful evidence artifact identities
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          verify_digest () {
+            local run_id="$1" name="$2" expected="$3"
+            local got
+            got="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" \
+              --jq ".artifacts[] | select(.name == \"${name}\") | .digest" | head -n1)"
+            test -n "$got"
+            test "$got" = "$expected"
+          }
+          # Immutable GeoNames historic evidence requested by the proof definition.
+          verify_digest 32301104609 geonames-all-current-historic-mirror-audit \
+            sha256:0f68c08ed49f2d720a20fba58471a40811008f57a97b4c6519232d59e6d1cc66
+          # Successful current-OSM and domestic-GNIS evidence are also pinned.
+          verify_digest 32354635287 osm-current-planet-all-name-keys-mirror-audit \
+            sha256:15ed504ac100d3788c398016f7ba2b4bfc6651ac7d2a4d205b79bff5b52427f2
+          verify_digest 32354635287 usgs-gnis-current-variant-historical-mirror-audit \
+            sha256:ccb642ccd13d9de2953637449f13a459c92cc31b54c7caadb2f5d1377e878077
+
+      - name: Download immutable GeoNames historic artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: geonames-all-current-historic-mirror-audit
+          run-id: 32301104609
+          github-token: ${{ github.token }}
+          path: evidence/geonames-historic
+
+      - name: Download successful OSM-current artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: osm-current-planet-all-name-keys-mirror-audit
+          run-id: 32354635287
+          github-token: ${{ github.token }}
+          path: evidence/osm-current
+
+      - name: Download successful domestic GNIS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: usgs-gnis-current-variant-historical-mirror-audit
+          run-id: 32354635287
+          github-token: ${{ github.token }}
+          path: evidence/usgs-gnis
+
+      - name: Download domestic GNIS ICU/punctuation safety supplement
+        uses: actions/download-artifact@v4
+        with:
+          name: usgs-gnis-icu-punctuation-99pct-supplement
+          run-id: ${{ inputs.gnis_safety_run_id }}
+          github-token: ${{ github.token }}
+          path: evidence/usgs-gnis-safety
+
+      - name: Download complete broad OSM history repair
+        uses: actions/download-artifact@v4
+        with:
+          name: osm-full-history-260810-99pct-feature-name-repair
+          run-id: ${{ inputs.osm_history_run_id }}
+          github-token: ${{ github.token }}
+          path: evidence/osm-history
+
+      - name: Download complete NGA GNS recovery
+        uses: actions/download-artifact@v4
+        with:
+          name: nga-gns-whole-world-99pct-complete
+          run-id: ${{ inputs.nga_run_id }}
+          github-token: ${{ github.token }}
+          path: evidence/nga-gns
+
+      - name: Download GeoNames ASCII/inline supplement
+        uses: actions/download-artifact@v4
+        with:
+          name: geonames-ascii-inline-99pct-supplement
+          run-id: ${{ inputs.geonames_supplement_run_id }}
+          github-token: ${{ github.token }}
+          path: evidence/geonames-ascii-inline
+
+      - name: Download USGS/BGN Antarctic Names evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: usgs-bgn-antarctica-99pct
+          run-id: ${{ inputs.antarctica_run_id }}
+          github-token: ${{ github.token }}
+          path: evidence/usgs-antarctica
+
+      - name: Download IHO-IOC GEBCO/SCUFN evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: iho-ioc-gebco-scufn-99pct
+          run-id: ${{ inputs.gebco_run_id }}
+          github-token: ${{ github.token }}
+          path: evidence/gebco-scufn
+
+      - name: Enforce source-specific proof gate and consolidate results
+        id: proof_gate
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/consolidated-99pct
+          review=()
+          if test -f proof/quarantine_review.csv; then
+            review=(--quarantine-review proof/quarantine_review.csv)
+          fi
+          python scripts/consolidate_99pct_proof.py \
+            --source geonames_historic=evidence/geonames-historic \
+            --source geonames_ascii_inline=evidence/geonames-ascii-inline \
+            --source osm_current=evidence/osm-current \
+            --source osm_history=evidence/osm-history \
+            --source usgs_gnis=evidence/usgs-gnis \
+            --source usgs_gnis_safety=evidence/usgs-gnis-safety \
+            --source nga_gns=evidence/nga-gns \
+            --source usgs_antarctica=evidence/usgs-antarctica \
+            --source gebco_scufn=evidence/gebco-scufn \
+            "${review[@]}" \
+            --out artifacts/consolidated-99pct
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: consolidated-global-mirror-palindrome-99pct-proof
+          path: artifacts/consolidated-99pct/
+          retention-days: 90
+          if-no-files-found: error

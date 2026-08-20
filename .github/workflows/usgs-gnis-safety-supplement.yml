@@ -1,0 +1,49 @@
+name: USGS GNIS ICU and Punctuation Safety Supplement
+
+on:
+  push:
+    branches: [agent/osm-africa-mirror-palindrome-scan]
+    paths:
+      - '.github/workflows/usgs-gnis-safety-supplement.yml'
+      - 'scripts/scan_delimited_name_safety.py'
+      - 'scripts/palindrome_safety.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gnis-safety:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install rendering dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fontconfig fonts-noto-core fonts-noto-extra fonts-noto-cjk libicu-dev pkg-config
+          python -m pip install -r requirements.txt
+      - name: Download official domestic GNIS products
+        run: |
+          set -euo pipefail
+          mkdir -p data artifacts/gnis-safety/all artifacts/gnis-safety/historical
+          curl -fL --retry 8 https://prd-tnm.s3.amazonaws.com/StagedProducts/GeographicNames/Topical/AllNames_National_Text.zip -o data/gnis_all.zip
+          curl -fL --retry 8 https://prd-tnm.s3.amazonaws.com/StagedProducts/GeographicNames/Topical/HistoricalFeatures_National_Text.zip -o data/gnis_historical.zip
+          unzip -t data/gnis_all.zip
+          unzip -t data/gnis_historical.zip
+          sha256sum data/*.zip | tee artifacts/gnis-safety/source_sha256.txt
+      - name: Re-scan all current/variant names with ICU-before-rejection safety
+        run: |
+          set -euo pipefail
+          python scripts/scan_delimited_name_safety.py --zip data/gnis_all.zip \
+            --out artifacts/gnis-safety/all --source-label USGS-GNIS-All-Names-99pct-safety
+          python scripts/scan_delimited_name_safety.py --zip data/gnis_historical.zip \
+            --out artifacts/gnis-safety/historical --source-label USGS-GNIS-Historical-Features-99pct-safety
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usgs-gnis-icu-punctuation-99pct-supplement
+          path: artifacts/gnis-safety/
+          retention-days: 30
+          if-no-files-found: error

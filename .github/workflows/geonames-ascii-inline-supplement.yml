@@ -1,0 +1,54 @@
+name: GeoNames All-Representations ICU Safety and ASCII Supplement
+
+on:
+  push:
+    branches: [agent/osm-africa-mirror-palindrome-scan]
+    paths:
+      - '.github/workflows/geonames-ascii-inline-supplement.yml'
+      - 'scripts/scan_geonames_ascii_inline.py'
+      - 'scripts/palindrome_safety.py'
+      - 'scripts/scan_mirror_palindromes.py'
+      - 'requirements.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  geonames-ascii-inline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install rendering dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fontconfig fonts-noto-core fonts-noto-extra fonts-noto-cjk libicu-dev pkg-config
+          python -m pip install -r requirements.txt
+      - name: Download frozen-at-run GeoNames authoritative inputs
+        run: |
+          set -euo pipefail
+          mkdir -p data artifacts/geonames-ascii-inline
+          curl -fL --retry 8 https://download.geonames.org/export/dump/allCountries.zip -o data/allCountries.zip
+          curl -fL --retry 8 https://download.geonames.org/export/dump/alternateNamesV2.zip -o data/alternateNamesV2.zip
+          curl -fL --retry 8 https://download.geonames.org/export/dump/countryInfo.txt -o data/countryInfo.txt
+          curl -fL --retry 8 https://download.geonames.org/export/dump/featureCodes_en.txt -o data/featureCodes_en.txt
+          unzip -t data/allCountries.zip
+          unzip -t data/alternateNamesV2.zip
+          sha256sum data/* | tee artifacts/geonames-ascii-inline/source_sha256.txt
+      - name: Scan canonical, asciiname, inline alternatenames and alternateNamesV2 with ICU safety
+        run: |
+          set -euo pipefail
+          python scripts/scan_geonames_ascii_inline.py \
+            --all-countries data/allCountries.zip --alternate-names data/alternateNamesV2.zip \
+            --country-info data/countryInfo.txt \
+            --feature-codes data/featureCodes_en.txt --out artifacts/geonames-ascii-inline \
+            2>&1 | tee artifacts/geonames-ascii-inline/run.log
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: geonames-ascii-inline-99pct-supplement
+          path: artifacts/geonames-ascii-inline/
+          retention-days: 30
+          if-no-files-found: error

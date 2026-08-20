@@ -1,24 +1,59 @@
-name: NGA GNS Whole-World Mirror-Palindrome Recovery
+name: NGA GNS 99pct Resumable Whole-World Recovery
 
 on:
   push:
     branches: [agent/osm-africa-mirror-palindrome-scan]
     paths:
       - '.github/workflows/nga-gns-recovery.yml'
-      - 'scripts/scan_nga_arcgis_names.py'
+      - 'scripts/scan_nga_arcgis_resumable.py'
+      - 'scripts/palindrome_safety.py'
       - 'scripts/scan_mirror_palindromes.py'
       - 'requirements.txt'
-  pull_request:
-    branches: [main]
-    paths:
-      - '.github/workflows/nga-gns-recovery.yml'
   workflow_dispatch:
+    inputs:
+      resume_run_id:
+        description: 'Optional prior run ID whose per-shard checkpoint artifacts should be resumed'
+        required: false
+        type: string
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
-  nga-gns-whole-world-recovery:
+  enumerate-objectids:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install enumeration dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libicu-dev pkg-config
+          python -m pip install -r requirements.txt requests==2.34.2
+      - name: Capture complete official OBJECTID universe once
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/gns-ids
+          python scripts/scan_nga_arcgis_resumable.py --enumerate-only \
+            --out artifacts/gns-ids --ids-out artifacts/gns-ids/objectids.txt.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nga-gns-99pct-objectids
+          path: artifacts/gns-ids/
+          retention-days: 30
+          if-no-files-found: error
+
+  nga-gns-shard:
+    needs: enumerate-objectids
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
@@ -27,25 +62,152 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-      - name: Install rendering dependencies robustly
-        timeout-minutes: 25
-        env:
-          DEBIAN_FRONTEND: noninteractive
+      - name: Download captured OBJECTID universe
+        uses: actions/download-artifact@v4
+        with:
+          name: nga-gns-99pct-objectids
+          path: artifacts/gns-ids
+      - name: Install rendering dependencies
         run: |
           set -euo pipefail
-          echo 'https://archive.ubuntu.com/ubuntu' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
-          sudo timeout 10m apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
-          sudo timeout 15m apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends fontconfig fonts-noto-core fonts-noto-extra fonts-noto-cjk libicu-dev pkg-config
-          python -m pip install -r requirements.txt
-      - name: Scan official NGA GNS whole-world ArcGIS name-record service
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+            fontconfig fonts-noto-core fonts-noto-extra fonts-noto-cjk libicu-dev pkg-config
+          python -m pip install -r requirements.txt requests==2.34.2
+
+      - name: Restore prior shard checkpoints when requested
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.resume_run_id != '' }}
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: nga-gns-99pct-shard-${{ matrix.shard }}
+          path: artifacts/gns-shard-${{ matrix.shard }}
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.resume_run_id }}
+
+      - name: Scan official whole-world layer by complete OBJECTID enumeration
         run: |
           set -euo pipefail
-          mkdir -p artifacts/gns-recovery
-          python scripts/scan_nga_arcgis_names.py --out artifacts/gns-recovery --workers 4 --page-size 2000 2>&1 | tee artifacts/gns-recovery/run.log
+          mkdir -p artifacts/gns-shard-${{ matrix.shard }}
+          python scripts/scan_nga_arcgis_resumable.py \
+            --out artifacts/gns-shard-${{ matrix.shard }} \
+            --ids-file artifacts/gns-ids/objectids.txt.gz --id-manifest artifacts/gns-ids/id_manifest.json \
+            --shard-index ${{ matrix.shard }} --shard-count 4 \
+            --workers 6 --batch-size 1000 \
+            2>&1 | tee artifacts/gns-shard-${{ matrix.shard }}/run.log
+
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nga-gns-whole-world-recovery-mirror-audit
-          path: artifacts/gns-recovery/
+          name: nga-gns-99pct-shard-${{ matrix.shard }}
+          path: artifacts/gns-shard-${{ matrix.shard }}/
+          retention-days: 30
+          if-no-files-found: error
+
+  merge-nga-gns:
+    needs: [enumerate-objectids, nga-gns-shard]
+    if: ${{ always() && needs.enumerate-objectids.result == 'success' && needs.nga-gns-shard.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nga-gns-99pct-shard-*
+          path: shards
+      - uses: actions/download-artifact@v4
+        with:
+          name: nga-gns-99pct-objectids
+          path: ids
+      - name: Merge shards and assert global service-count equality
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/gns-99pct
+          python - <<'PY'
+          import csv, json
+          from pathlib import Path
+
+          roots=sorted(p for p in Path('shards').iterdir() if p.is_dir())
+          if len(roots) != 4: raise SystemExit(f'expected 4 shard artifacts, got {len(roots)}')
+          ms=[json.loads((p/'scan_manifest.json').read_text()) for p in roots]
+          idm=json.loads(Path('ids/id_manifest.json').read_text())
+          if not idm.get('ids_equal_service_count'):
+              raise SystemExit('captured OBJECTID artifact failed count equality')
+          counts={int(m['service_count_at_start']) for m in ms}
+          ids={int(m['ids_enumerated']) for m in ms}
+          if len(counts)!=1 or len(ids)!=1 or counts != ids:
+              raise SystemExit(f'service/ID enumeration mismatch: counts={counts} ids={ids}')
+          service_count=counts.pop()
+          if service_count != int(idm['service_count']):
+              raise SystemExit('shard service count differs from captured OBJECTID manifest')
+          if not all(m.get('id_coverage_exact') and m.get('rows_equal_shard_expected') and m.get('ids_equal_service_count') for m in ms):
+              raise SystemExit('one or more shards failed ID coverage assertions')
+          scanned=sum(int(m['rows_scanned']) for m in ms)
+          if scanned != service_count:
+              raise SystemExit(f'global coverage mismatch service_count={service_count} rows_scanned={scanned}')
+
+          def read(fn):
+              out=[]
+              for p in roots:
+                  q=p/fn
+                  if q.exists():
+                      with q.open(encoding='utf-8',newline='') as f: out.extend(csv.DictReader(f))
+              return out
+          def uniq(rs, keys):
+              d={}
+              for r in rs: d[tuple(r.get(k,'') for k in keys)]=r
+              return list(d.values())
+          textual=uniq(read('all_textual_palindromes_ge9.csv'),['objectid','name_column','raw_name','normalized_name','normalization_mode','case_locale'])
+          mirrors=uniq(read('mirror_results.csv'),['objectid','name_column','raw_name','normalized_name','normalization_mode','case_locale','render_case_variant','render_text'])
+          failures=uniq(read('render_failures.csv'),['objectid','name_column','raw_name','normalized_name','normalization_mode','case_locale','render_case_variant','render_text'])
+          proof=[r for r in mirrors if str(r.get('mirror_pass','')).lower() in ('true','1','yes') and str(r.get('proof_eligible','')).lower() in ('true','1','yes') and str(r.get('quarantine','')).lower() not in ('true','1','yes')]
+          quarantine=[r for r in mirrors if str(r.get('mirror_pass','')).lower() in ('true','1','yes') and r not in proof]
+          out=Path('artifacts/gns-99pct')
+          def write(fn,rs):
+              fields=sorted({k for r in rs for k in r}) if rs else []
+              with (out/fn).open('w',encoding='utf-8',newline='') as f:
+                  w=csv.DictWriter(f,fieldnames=fields,extrasaction='ignore');w.writeheader();w.writerows(rs)
+          write('all_textual_palindromes_ge9.csv',textual)
+          write('mirror_results.csv',mirrors)
+          write('results.csv',proof)
+          write('quarantine_results.csv',quarantine)
+          write('render_failures.csv',failures)
+          merged={
+              'source':'NGA-GNS official RESEARCH/GIS_OUTPUT ArcGIS whole-world layer',
+              'service_url':'https://geonames.nga.mil/geon-ags/rest/services/RESEARCH/GIS_OUTPUT/MapServer/0',
+              'service_count_at_start':service_count,
+              'ids_enumerated':service_count,
+              'unique_ids_enumerated':service_count,
+              'ids_equal_service_count':True,
+              'rows_scanned':scanned,
+              'rows_equal_service_count':scanned==service_count,
+              'global_objectid_coverage_exact':True,
+              'exact_objectid_coverage':True,
+              'name_columns_scanned':['full_name','full_nm_nd'],
+              'name_fields_scanned':['full_name','full_nm_nd'],
+              'two_pass_candidate_metadata_hydration':True,
+              'resumable_checkpoint_artifacts':True,
+              'minimum_grapheme_length':9,
+              'unicode_grapheme_clusters':True,
+              'upper_length_bound':None,
+              'icu_case_before_textual_rejection':True,
+              'permissive_punctuation_pass':True,
+              'permissive_punctuation_pass_quarantine_only':True,
+              'font_definition':'locked Noto Sans Regular; font-dependent result',
+              'full_name_values_scanned':sum(int(m['full_name_values_scanned']) for m in ms),
+              'full_nm_nd_values_scanned':sum(int(m['full_nm_nd_values_scanned']) for m in ms),
+              'textual_palindrome_records_ge9':len(textual),
+              'mirror_render_variants':len(mirrors),
+              'mirror_pass_variants':len(proof),
+              'quarantine_mirror_pass_variants':len(quarantine),
+              'render_failures':len(failures),
+              'retained_metadata':ms[0]['retained_metadata'],
+          }
+          (out/'scan_manifest.json').write_text(json.dumps(merged,ensure_ascii=False,indent=2)+'\n')
+          print(json.dumps(merged,ensure_ascii=False))
+          if failures: raise SystemExit(f'{len(failures)} render failures')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nga-gns-whole-world-99pct-complete
+          path: artifacts/gns-99pct/
           retention-days: 30
           if-no-files-found: error

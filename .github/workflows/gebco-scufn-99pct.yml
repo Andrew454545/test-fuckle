@@ -1,0 +1,37 @@
+name: IHO-IOC GEBCO SCUFN Undersea 99pct Cross-check
+on:
+  push:
+    branches: [agent/osm-africa-mirror-palindrome-scan]
+    paths:
+      - '.github/workflows/gebco-scufn-99pct.yml'
+      - 'scripts/scan_gebco_scufn_arcgis.py'
+      - 'scripts/palindrome_safety.py'
+      - 'scripts/scan_mirror_palindromes.py'
+      - 'requirements.txt'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  gebco-scufn:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install rendering dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fontconfig fonts-noto-core fonts-noto-extra fonts-noto-cjk libicu-dev pkg-config
+          python -m pip install -r requirements.txt requests==2.34.2
+      - name: Scan all official point, line and polygon undersea-feature layers
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/gebco-scufn
+          python scripts/scan_gebco_scufn_arcgis.py --out artifacts/gebco-scufn 2>&1 | tee artifacts/gebco-scufn/run.log
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iho-ioc-gebco-scufn-99pct
+          path: artifacts/gebco-scufn/
+          retention-days: 30
+          if-no-files-found: error

@@ -1,0 +1,71 @@
+name: USGS BGN Antarctica 99pct Scan
+on:
+  push:
+    branches: [agent/osm-africa-mirror-palindrome-scan]
+    paths:
+      - '.github/workflows/usgs-antarctica-99pct.yml'
+      - 'scripts/scan_usgs_antarctica.py'
+      - 'scripts/palindrome_safety.py'
+      - 'scripts/scan_mirror_palindromes.py'
+      - 'requirements.txt'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  antarctica:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install rendering dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fontconfig fonts-noto-core fonts-noto-extra fonts-noto-cjk libicu-dev pkg-config
+          python -m pip install -r requirements.txt requests==2.34.2
+      - name: Resolve and download current official Antarctica text ZIP
+        run: |
+          set -euo pipefail
+          mkdir -p data artifacts/usgs-antarctica
+          python - <<'PY'
+          import pathlib, requests, xml.etree.ElementTree as ET
+          base='https://prd-tnm.s3.amazonaws.com/'
+          prefix='StagedProducts/GeographicNames/Antarctica/'
+          token=None; keys=[]
+          while True:
+              p={'list-type':'2','prefix':prefix}
+              if token:p['continuation-token']=token
+              r=requests.get(base,params=p,timeout=60);r.raise_for_status();root=ET.fromstring(r.text)
+              ns={'s':'http://s3.amazonaws.com/doc/2006-03-01/'}
+              keys += [x.text for x in root.findall('s:Contents/s:Key',ns)]
+              trunc=(root.findtext('s:IsTruncated',default='false',namespaces=ns).lower()=='true')
+              if not trunc:break
+              token=root.findtext('s:NextContinuationToken',namespaces=ns)
+          zips=[k for k in keys if k.lower().endswith('.zip')]
+          textish=[k for k in zips if any(s in k.lower() for s in ('text','txt')) and not any(s in k.lower() for s in ('gdb','gpkg'))]
+          if not textish:
+              raise SystemExit('No Antarctica text ZIP found. Available ZIPs: '+repr(zips))
+          # Prefer the shortest/currently canonical text-product key if aliases exist.
+          key=sorted(textish,key=lambda k:(len(k),k))[-1] if len(textish)==1 else sorted(textish,key=lambda k:(len(k),k))[0]
+          out=pathlib.Path('data/antarctica.zip')
+          with requests.get(base+key,stream=True,timeout=120) as r:
+              r.raise_for_status()
+              with out.open('wb') as f:
+                  for b in r.iter_content(8*1024*1024):
+                      if b:f.write(b)
+          pathlib.Path('artifacts/usgs-antarctica/source_key.txt').write_text(key+'\n')
+          print(key)
+          PY
+          unzip -t data/antarctica.zip
+          sha256sum data/antarctica.zip | tee artifacts/usgs-antarctica/source_sha256.txt
+      - name: Scan official Antarctica names
+        run: |
+          set -euo pipefail
+          python scripts/scan_usgs_antarctica.py --zip data/antarctica.zip --out artifacts/usgs-antarctica 2>&1 | tee artifacts/usgs-antarctica/run.log
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usgs-bgn-antarctica-99pct
+          path: artifacts/usgs-antarctica/
+          retention-days: 30
+          if-no-files-found: error
