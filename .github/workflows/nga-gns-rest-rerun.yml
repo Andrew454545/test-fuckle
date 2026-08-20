@@ -1,13 +1,10 @@
-name: NGA GNS Whole-World Mirror-Palindrome Rerun
+name: OSM Full-History All-Names Optimized Repair
 
 on:
   push:
     branches: [agent/osm-africa-mirror-palindrome-scan]
     paths:
       - '.github/workflows/nga-gns-rest-rerun.yml'
-      - 'scripts/scan_nga_gns_rest.py'
-      - 'scripts/scan_mirror_palindromes.py'
-      - 'requirements.txt'
   workflow_dispatch:
 
 permissions:
@@ -15,29 +12,139 @@ permissions:
 
 env:
   PYTHONUNBUFFERED: '1'
+  HISTORY_URL: https://planet.openstreetmap.org/pbf/full-history/history-260810.osm.pbf
+  HISTORY_MD5_URL: https://planet.openstreetmap.org/pbf/full-history/history-260810.osm.pbf.md5
 
 jobs:
-  nga-gns-whole-world:
+  osm-full-history-all-names-optimized-repair:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
-      - name: Install rendering dependencies
+      - name: Install optimized scanner dependencies
         run: |
           set -euo pipefail
           echo 'https://archive.ubuntu.com/ubuntu' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
-          sudo timeout 10m apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
-          sudo timeout 15m apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends fontconfig fonts-noto-core fonts-noto-extra fonts-noto-cjk libicu-dev pkg-config
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends osmium-tool parallel fontconfig fonts-noto-core fonts-noto-extra fonts-noto-cjk libicu-dev pkg-config
           python -m pip install -r requirements.txt
-      - name: Scan complete NGA GNS through official whole-world REST layer
+      - name: Build exhaustive naming-key filter
+        run: |
+          cat > name_filters.txt <<'EOF'
+          nwr/name
+          nwr/name:*
+          nwr/official_name
+          nwr/official_name:*
+          nwr/loc_name
+          nwr/loc_name:*
+          nwr/alt_name
+          nwr/alt_name:*
+          nwr/short_name
+          nwr/short_name:*
+          nwr/int_name
+          nwr/int_name:*
+          nwr/nat_name
+          nwr/nat_name:*
+          nwr/reg_name
+          nwr/reg_name:*
+          nwr/old_name
+          nwr/old_name:*
+          nwr/historic_name
+          nwr/historic_name:*
+          nwr/former_name
+          nwr/former_name:*
+          nwr/previous_name
+          nwr/previous_name:*
+          nwr/was:name
+          nwr/was:name:*
+          nwr/was:official_name
+          nwr/was:official_name:*
+          nwr/was:loc_name
+          nwr/was:loc_name:*
+          nwr/was:alt_name
+          nwr/was:alt_name:*
+          EOF
+          sed -i 's/^          //' name_filters.txt
+      - name: Stream frozen 151GB history Planet and scan in four persistent OPL shards
+        shell: bash
         run: |
           set -euo pipefail
-          mkdir -p artifacts/gns
-          python scripts/scan_nga_gns_rest.py --out artifacts/gns 2>&1 | tee artifacts/gns/run.log
+          mkdir -p artifacts/osm-full-history-optimized/shards
+          curl -fsSL "$HISTORY_MD5_URL" | tee artifacts/osm-full-history-optimized/official.md5
+          rm -f md5.pipe; mkfifo md5.pipe
+          (md5sum < md5.pipe | awk '{print $1}' > artifacts/osm-full-history-optimized/computed.md5) & MPID=$!
+          curl -fL --retry 12 --retry-all-errors --connect-timeout 30 "$HISTORY_URL" \
+            | tee md5.pipe \
+            | osmium tags-filter -R -F pbf -f opl -e name_filters.txt - \
+            | parallel --pipe --round-robin -j 4 --block 16M --line-buffer \
+                'mkdir -p artifacts/osm-full-history-optimized/shards/{%}; python scripts/scan_osm_all_name_opl.py --out artifacts/osm-full-history-optimized/shards/{%} --source-label OSM-full-history-260810 --history'
+          wait "$MPID"; rm -f md5.pipe
+          test "$(awk '{print $1}' artifacts/osm-full-history-optimized/official.md5)" = "$(cat artifacts/osm-full-history-optimized/computed.md5)"
+      - name: Merge and audit shard outputs
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv, json
+          from pathlib import Path
+          root = Path('artifacts/osm-full-history-optimized')
+          shards = sorted(p for p in (root/'shards').iterdir() if p.is_dir())
+          if len(shards) != 4:
+              raise SystemExit(f'expected 4 persistent shards, got {len(shards)}')
+          manifests=[]
+          for p in shards:
+              manifests.append(json.loads((p/'scan_manifest.json').read_text()))
+          def read_rows(fn):
+              out=[]
+              for p in shards:
+                  q=p/fn
+                  if q.exists():
+                      with q.open(encoding='utf-8', newline='') as f: out.extend(csv.DictReader(f))
+              return out
+          textual=read_rows('all_textual_palindromes_ge9.csv')
+          mirrors=read_rows('mirror_results.csv')
+          failures=read_rows('render_failures.csv')
+          def uniq(rows, keys):
+              d={}
+              for r in rows: d[tuple(r.get(k,'') for k in keys)]=r
+              return list(d.values())
+          textual=uniq(textual,['osm_type','osm_id','version','name_key','raw_name'])
+          mirrors=uniq(mirrors,['osm_type','osm_id','version','name_key','raw_name','case_variant','render_text'])
+          failures=uniq(failures,['osm_type','osm_id','version','name_key','raw_name','case_variant','render_text'])
+          winners=[r for r in mirrors if str(r.get('mirror_pass','')).lower() in ('true','1','yes')]
+          def write(fn, rows, fallback=None):
+              fields=sorted({k for r in rows for k in r}) if rows else (fallback or [])
+              with (root/fn).open('w',encoding='utf-8',newline='') as f:
+                  w=csv.DictWriter(f,fieldnames=fields,extrasaction='ignore'); w.writeheader(); w.writerows(rows)
+          write('all_textual_palindromes_ge9.csv', textual)
+          write('mirror_results.csv', mirrors)
+          write('results.csv', winners)
+          write('render_failures.csv', failures)
+          key_counts={}
+          for m in manifests:
+              for k,v in m.get('name_key_counts',{}).items(): key_counts[k]=key_counts.get(k,0)+int(v)
+          merged={
+              'source_label':'OSM-full-history-260810',
+              'history_file':True,
+              'scope':'all node/way/relation versions in frozen history-260810 across current/localized/alternate/historical naming-key families; no place=* restriction',
+              'parallel_opl_shards':4,
+              'object_versions_scanned':sum(int(m.get('object_versions_scanned',0)) for m in manifests),
+              'name_values_scanned':sum(int(m.get('name_values_scanned',0)) for m in manifests),
+              'textual_palindrome_records_ge9':len(textual),
+              'mirror_render_variants':len(mirrors),
+              'mirror_pass_variants':len(winners),
+              'render_failures':len(failures),
+              'name_key_counts':key_counts,
+              'minimum_grapheme_length':9,
+              'visual_mirror_threshold':0.05,
+          }
+          (root/'scan_manifest.json').write_text(json.dumps(merged,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+          print(json.dumps(merged,ensure_ascii=False))
+          if failures: raise SystemExit(8)
+          PY
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nga-gns-whole-world-multilingual-historical-mirror-audit-rest
-          path: artifacts/gns/
+          name: osm-full-history-260810-all-name-keys-optimized-repair
+          path: artifacts/osm-full-history-optimized/
           retention-days: 30
           if-no-files-found: error
