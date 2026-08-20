@@ -20,7 +20,7 @@ permissions:
 jobs:
   nga-gns-whole-world-recovery:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -41,7 +41,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p artifacts/gns-recovery
-          python scripts/scan_nga_arcgis_names.py --out artifacts/gns-recovery --workers 12 --page-size 3000 2>&1 | tee artifacts/gns-recovery/run.log
+          python scripts/scan_nga_arcgis_names.py --out artifacts/gns-recovery --workers 4 --page-size 2000 2>&1 | tee artifacts/gns-recovery/run.log
       - if: always()
         uses: actions/upload-artifact@v4
         with:
