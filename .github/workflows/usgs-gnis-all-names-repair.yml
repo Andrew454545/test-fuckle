@@ -1,0 +1,60 @@
+name: USGS GNIS All-Names Mirror Repair
+
+on:
+  push:
+    branches: [agent/osm-africa-mirror-palindrome-scan]
+    paths:
+      - '.github/workflows/usgs-gnis-all-names-repair.yml'
+      - 'scripts/scan_delimited_gazetteer_names.py'
+      - 'scripts/scan_mirror_palindromes.py'
+      - 'requirements.txt'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/usgs-gnis-all-names-repair.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  usgs-gnis-all-names-repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install rendering dependencies robustly
+        timeout-minutes: 25
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          echo 'https://archive.ubuntu.com/ubuntu' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          sudo timeout 10m apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo timeout 15m apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends fontconfig fonts-noto-core fonts-noto-extra fonts-noto-cjk libicu-dev pkg-config
+          python -m pip install -r requirements.txt
+      - name: Download and scan GNIS All Names and Historical Features
+        run: |
+          set -euo pipefail
+          mkdir -p data artifacts/gnis-all-repair artifacts/gnis-historical-repair
+          curl -fL --retry 8 --retry-all-errors --connect-timeout 30 https://prd-tnm.s3.amazonaws.com/StagedProducts/GeographicNames/Topical/AllNames_National_Text.zip -o data/gnis_all.zip
+          curl -fL --retry 8 --retry-all-errors --connect-timeout 30 https://prd-tnm.s3.amazonaws.com/StagedProducts/GeographicNames/Topical/HistoricalFeatures_National_Text.zip -o data/gnis_historical.zip
+          unzip -t data/gnis_all.zip
+          unzip -t data/gnis_historical.zip
+          sha256sum data/gnis_all.zip data/gnis_historical.zip | tee artifacts/gnis_source_sha256.txt
+          python scripts/scan_delimited_gazetteer_names.py --zip data/gnis_all.zip --out artifacts/gnis-all-repair --source-label USGS-GNIS-All-Names
+          python scripts/scan_delimited_gazetteer_names.py --zip data/gnis_historical.zip --out artifacts/gnis-historical-repair --source-label USGS-GNIS-Historical-Features
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usgs-gnis-current-variant-historical-mirror-audit-repair
+          path: artifacts/
+          retention-days: 30
+          if-no-files-found: error
