@@ -1,0 +1,88 @@
+name: 99pct Proof Source Status
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/proof-source-status.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  proof-source-status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Query proof-specific workflow runs without changing them
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/proof-source-status
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+
+          repo=os.environ['REPO']
+          branch=os.environ['BRANCH']
+          workflows={
+            'nga':'nga-gns-recovery.yml',
+            'osm_history':'nga-gns-rest-rerun.yml',
+            'geonames_supplement':'geonames-ascii-inline-supplement.yml',
+            'gnis_safety':'usgs-gnis-safety-supplement.yml',
+            'antarctica':'usgs-antarctica-99pct.yml',
+            'gebco_scufn':'gebco-scufn-99pct.yml',
+          }
+          def gh(path):
+              p=subprocess.run(['gh','api',path],check=True,text=True,capture_output=True)
+              return json.loads(p.stdout)
+          out={'repository':repo,'branch':branch,'sources':{}}
+          for key,wf in workflows.items():
+              data=gh(f'repos/{repo}/actions/workflows/{wf}/runs?branch={branch}&per_page=10')
+              runs=data.get('workflow_runs',[])
+              latest=runs[0] if runs else None
+              out['sources'][key]={
+                'workflow':wf,
+                'latest': None if latest is None else {
+                  'id':latest['id'],'status':latest['status'],'conclusion':latest.get('conclusion'),
+                  'event':latest.get('event'),'head_sha':latest.get('head_sha'),
+                  'created_at':latest.get('created_at'),'updated_at':latest.get('updated_at'),
+                  'html_url':latest.get('html_url'),
+                },
+                'active_runs':[
+                  {'id':r['id'],'status':r['status'],'event':r.get('event'),'head_sha':r.get('head_sha'),'created_at':r.get('created_at')}
+                  for r in runs if r.get('status') in ('queued','in_progress','waiting','pending','requested')
+                ],
+                'latest_success': next(({
+                  'id':r['id'],'head_sha':r.get('head_sha'),'created_at':r.get('created_at'),'html_url':r.get('html_url')
+                } for r in runs if r.get('status')=='completed' and r.get('conclusion')=='success'),None),
+              }
+          # Also expose the known current super-scan because its OSM-history job must not be duplicated.
+          try:
+              run=gh(f'repos/{repo}/actions/runs/32609721114')
+              jobs=gh(f'repos/{repo}/actions/runs/32609721114/jobs?per_page=100').get('jobs',[])
+              out['current_super_scan']={
+                'id':run.get('id'),'status':run.get('status'),'conclusion':run.get('conclusion'),
+                'head_sha':run.get('head_sha'),
+                'osm_full_history_job':next(({
+                  'id':j.get('id'),'status':j.get('status'),'conclusion':j.get('conclusion'),
+                  'name':j.get('name'),'started_at':j.get('started_at'),'completed_at':j.get('completed_at')
+                } for j in jobs if j.get('name')=='osm-full-history-all-names'),None)
+              }
+          except Exception as e:
+              out['current_super_scan']={'query_error':repr(e)}
+          Path('artifacts/proof-source-status/status.json').write_text(json.dumps(out,indent=2)+'\n')
+          print(json.dumps(out,indent=2))
+          PY
+          cat artifacts/proof-source-status/status.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proof-source-status
+          path: artifacts/proof-source-status/status.json
+          retention-days: 7
+          if-no-files-found: error
