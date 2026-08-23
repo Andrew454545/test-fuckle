@@ -1,0 +1,71 @@
+name: Temporary 99pct Proof Status Probe
+
+on:
+  push:
+    branches: [agent/proof-status-probe]
+    paths:
+      - '.github/workflows/proof-status-probe.yml'
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Query six proof-source workflow runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_BRANCH: agent/osm-africa-mirror-palindrome-scan
+          TARGET_SHA: c766c7f36bc65c011cf7233148549dd5fc9379ef
+        run: |
+          set -euo pipefail
+          mkdir -p proof
+          python - <<'PY'
+          import json, os, subprocess
+          workflows = [
+              'nga-gns-recovery.yml',
+              'nga-gns-rest-rerun.yml',
+              'geonames-ascii-inline-supplement.yml',
+              'usgs-gnis-safety-supplement.yml',
+              'usgs-antarctica-99pct.yml',
+              'gebco-scufn-99pct.yml',
+          ]
+          repo = os.environ['GITHUB_REPOSITORY']
+          branch = os.environ['TARGET_BRANCH']
+          sha = os.environ['TARGET_SHA']
+          out = {'target_branch': branch, 'target_sha': sha, 'workflows': {}}
+          for wf in workflows:
+              path = f'repos/{repo}/actions/workflows/{wf}/runs?branch={branch}&event=push&per_page=30'
+              raw = subprocess.check_output(['gh','api',path], text=True)
+              data = json.loads(raw)
+              matches = [r for r in data.get('workflow_runs',[]) if r.get('head_sha') == sha]
+              r = matches[0] if matches else None
+              out['workflows'][wf] = None if r is None else {
+                  'id': r.get('id'),
+                  'name': r.get('name'),
+                  'run_number': r.get('run_number'),
+                  'event': r.get('event'),
+                  'status': r.get('status'),
+                  'conclusion': r.get('conclusion'),
+                  'created_at': r.get('created_at'),
+                  'updated_at': r.get('updated_at'),
+                  'run_started_at': r.get('run_started_at'),
+                  'head_sha': r.get('head_sha'),
+                  'html_url': r.get('html_url'),
+              }
+          with open('proof/live_status_probe.json','w',encoding='utf-8') as f:
+              json.dump(out,f,indent=2,sort_keys=True)
+              f.write('\n')
+          print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+      - name: Commit status snapshot to probe branch
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add proof/live_status_probe.json
+          git commit -m 'Record live 99pct proof workflow status'
+          git push origin HEAD:agent/proof-status-probe
