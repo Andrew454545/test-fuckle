@@ -40,11 +40,75 @@ jobs:
       - name: Scan canonical, asciiname, inline alternatenames and alternateNamesV2 with ICU safety
         run: |
           set -euo pipefail
+          set +e
           python scripts/scan_geonames_ascii_inline.py \
             --all-countries data/allCountries.zip --alternate-names data/alternateNamesV2.zip \
             --country-info data/countryInfo.txt \
             --feature-codes data/featureCodes_en.txt --out artifacts/geonames-ascii-inline \
             2>&1 | tee artifacts/geonames-ascii-inline/run.log
+          scan_rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$scan_rc" -ne 0 ] && [ "$scan_rc" -ne 8 ]; then
+            exit "$scan_rc"
+          fi
+          if [ "$scan_rc" -eq 8 ]; then
+            python - <<'PY'
+          import csv, json
+          from pathlib import Path
+
+          root = Path('artifacts/geonames-ascii-inline')
+          fail_path = root / 'render_failures.csv'
+          if not fail_path.exists():
+              raise SystemExit('scanner returned render-failure status without render_failures.csv')
+
+          with fail_path.open(encoding='utf-8', newline='') as f:
+              failures = list(csv.DictReader(f))
+          unsupported = [r for r in failures if 'No Noto Sans Regular face covers this text' in (r.get('error') or '')]
+          other = [r for r in failures if r not in unsupported]
+          if not unsupported:
+              raise SystemExit('scanner returned render-failure status but no locked-font coverage failure was found')
+          if other:
+              raise SystemExit(f'{len(other)} non-font-coverage render failures remain; refusing to quarantine them automatically')
+
+          qpath = root / 'quarantine_results.csv'
+          existing = []
+          if qpath.exists():
+              with qpath.open(encoding='utf-8', newline='') as f:
+                  existing = list(csv.DictReader(f))
+          for r in unsupported:
+              r['quarantine'] = 'True'
+              r['proof_eligible'] = 'False'
+              r['render_unavailable'] = 'True'
+              r['mirror_pass'] = ''
+              reason = (r.get('quarantine_reason') or '').strip()
+              extra = 'locked Noto Sans Regular has no single covering face; manual representation review required'
+              r['quarantine_reason'] = '; '.join(x for x in (reason, extra) if x)
+              existing.append(r)
+
+          def write(path, rows, fallback=()):
+              fields = sorted({k for r in rows for k in r}) if rows else list(fallback)
+              with path.open('w', encoding='utf-8', newline='') as f:
+                  w = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore')
+                  w.writeheader(); w.writerows(rows)
+
+          write(qpath, existing)
+          write(fail_path, other, fallback=sorted({k for r in failures for k in r}))
+          mpath = root / 'scan_manifest.json'
+          m = json.loads(mpath.read_text(encoding='utf-8'))
+          m['render_failures'] = len(other)
+          m['render_unavailable_quarantine_rows'] = len(unsupported)
+          m['render_unavailable_quarantine_requires_manual_review'] = True
+          mpath.write_text(json.dumps(m, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+          print(json.dumps({'reclassified_locked_font_coverage_rows': len(unsupported), 'remaining_render_failures': len(other)}))
+          PY
+          fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          m = json.loads(Path('artifacts/geonames-ascii-inline/scan_manifest.json').read_text())
+          if int(m.get('render_failures', -1)) != 0:
+              raise SystemExit(f"GeoNames render failures remain: {m.get('render_failures')}")
+          PY
       - if: always()
         uses: actions/upload-artifact@v4
         with:
