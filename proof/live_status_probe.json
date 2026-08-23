@@ -1,0 +1,84 @@
+{
+  "target_branch": "agent/osm-africa-mirror-palindrome-scan",
+  "target_sha": "c766c7f36bc65c011cf7233148549dd5fc9379ef",
+  "workflows": {
+    "gebco-scufn-99pct.yml": {
+      "conclusion": "success",
+      "created_at": "2026-08-22T09:58:20Z",
+      "event": "push",
+      "head_sha": "c766c7f36bc65c011cf7233148549dd5fc9379ef",
+      "html_url": "https://github.com/Andrew454545/test-fuckle/actions/runs/32566368614",
+      "id": 32566368614,
+      "name": "IHO-IOC GEBCO SCUFN Undersea 99pct Cross-check",
+      "run_number": 2,
+      "run_started_at": "2026-08-22T09:58:20Z",
+      "status": "completed",
+      "updated_at": "2026-08-22T09:59:41Z"
+    },
+    "geonames-ascii-inline-supplement.yml": {
+      "conclusion": "failure",
+      "created_at": "2026-08-22T09:58:20Z",
+      "event": "push",
+      "head_sha": "c766c7f36bc65c011cf7233148549dd5fc9379ef",
+      "html_url": "https://github.com/Andrew454545/test-fuckle/actions/runs/32566368587",
+      "id": 32566368587,
+      "name": "GeoNames All-Representations ICU Safety and ASCII Supplement",
+      "run_number": 2,
+      "run_started_at": "2026-08-22T09:58:20Z",
+      "status": "completed",
+      "updated_at": "2026-08-22T10:47:28Z"
+    },
+    "nga-gns-recovery.yml": {
+      "conclusion": "cancelled",
+      "created_at": "2026-08-22T09:58:20Z",
+      "event": "push",
+      "head_sha": "c766c7f36bc65c011cf7233148549dd5fc9379ef",
+      "html_url": "https://github.com/Andrew454545/test-fuckle/actions/runs/32566368594",
+      "id": 32566368594,
+      "name": "NGA GNS 99pct Resumable Whole-World Recovery",
+      "run_number": 10,
+      "run_started_at": "2026-08-22T09:58:20Z",
+      "status": "completed",
+      "updated_at": "2026-08-22T15:51:04Z"
+    },
+    "nga-gns-rest-rerun.yml": {
+      "conclusion": "cancelled",
+      "created_at": "2026-08-22T09:58:20Z",
+      "event": "push",
+      "head_sha": "c766c7f36bc65c011cf7233148549dd5fc9379ef",
+      "html_url": "https://github.com/Andrew454545/test-fuckle/actions/runs/32566368601",
+      "id": 32566368601,
+      "name": "OSM Full-History 99pct Feature-Name Repair",
+      "run_number": 4,
+      "run_started_at": "2026-08-22T09:58:20Z",
+      "status": "completed",
+      "updated_at": "2026-08-22T15:58:42Z"
+    },
+    "usgs-antarctica-99pct.yml": {
+      "conclusion": "success",
+      "created_at": "2026-08-22T09:58:20Z",
+      "event": "push",
+      "head_sha": "c766c7f36bc65c011cf7233148549dd5fc9379ef",
+      "html_url": "https://github.com/Andrew454545/test-fuckle/actions/runs/32566368577",
+      "id": 32566368577,
+      "name": "USGS BGN Antarctica 99pct Scan",
+      "run_number": 2,
+      "run_started_at": "2026-08-22T09:58:20Z",
+      "status": "completed",
+      "updated_at": "2026-08-22T09:59:49Z"
+    },
+    "usgs-gnis-safety-supplement.yml": {
+      "conclusion": "success",
+      "created_at": "2026-08-22T09:58:20Z",
+      "event": "push",
+      "head_sha": "c766c7f36bc65c011cf7233148549dd5fc9379ef",
+      "html_url": "https://github.com/Andrew454545/test-fuckle/actions/runs/32566368582",
+      "id": 32566368582,
+      "name": "USGS GNIS ICU and Punctuation Safety Supplement",
+      "run_number": 2,
+      "run_started_at": "2026-08-22T09:58:20Z",
+      "status": "completed",
+      "updated_at": "2026-08-22T10:00:58Z"
+    }
+  }
+}
