@@ -1,0 +1,255 @@
+name: OSM History Segment Worker Safe
+
+on:
+  workflow_call:
+    inputs:
+      segment_id:
+        required: true
+        type: string
+      start_offset:
+        required: true
+        type: string
+      prior_state_artifact:
+        required: false
+        type: string
+        default: ''
+    outputs:
+      end_offset:
+        value: ${{ jobs.scan.outputs.end_offset }}
+      total_bytes:
+        value: ${{ jobs.scan.outputs.total_bytes }}
+      complete:
+        value: ${{ jobs.scan.outputs.complete }}
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    outputs:
+      end_offset: ${{ steps.meta.outputs.end }}
+      total_bytes: ${{ steps.meta.outputs.total }}
+      complete: ${{ steps.meta.outputs.complete }}
+    env:
+      PYTHONUNBUFFERED: '1'
+      HISTORY_URL: https://planet.openstreetmap.org/pbf/full-history/history-260810.osm.pbf
+      SEGMENT_BYTES: '17179869184'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore previous segment state
+        if: ${{ inputs.prior_state_artifact != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.prior_state_artifact }}
+          path: .proof-state/osm-history
+
+      - name: Validate handoff and determine whether EOF is already reached
+        id: mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .proof-state/osm-history
+          start='${{ inputs.start_offset }}'
+          test "$start" -ge 0
+          if [ -f .proof-state/osm-history/next_offset.txt ]; then
+            prior="$(cat .proof-state/osm-history/next_offset.txt)"
+            test "$prior" = "$start"
+          else
+            test "$start" = 0
+          fi
+          noop=false
+          if [ -f .proof-state/osm-history/total_bytes.txt ]; then
+            total="$(cat .proof-state/osm-history/total_bytes.txt)"
+            if [ "$start" -eq "$total" ]; then noop=true; fi
+            if [ "$start" -gt "$total" ]; then exit 2; fi
+          fi
+          echo "start=$start" >> "$GITHUB_OUTPUT"
+          echo "noop=$noop" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Python build downloads
+        if: ${{ steps.mode.outputs.noop != 'true' }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: osm-history-pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
+      - name: Install optimized scanner dependencies
+        if: ${{ steps.mode.outputs.noop != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+            osmium-tool fontconfig fonts-noto-core fonts-noto-extra fonts-noto-cjk libicu-dev pkg-config
+          python -m pip install -r requirements.txt requests==2.34.2
+
+      - name: Build broad feature-name safety filter
+        if: ${{ steps.mode.outputs.noop != 'true' }}
+        shell: bash
+        run: |
+          cat > name_filters.txt <<'EOF'
+          nwr/name
+          nwr/name:*
+          nwr/official_name
+          nwr/official_name:*
+          nwr/loc_name
+          nwr/loc_name:*
+          nwr/alt_name
+          nwr/alt_name:*
+          nwr/short_name
+          nwr/short_name:*
+          nwr/int_name
+          nwr/int_name:*
+          nwr/nat_name
+          nwr/nat_name:*
+          nwr/reg_name
+          nwr/reg_name:*
+          nwr/full_name
+          nwr/full_name:*
+          nwr/long_name
+          nwr/long_name:*
+          nwr/ref_name
+          nwr/ref_name:*
+          nwr/nickname
+          nwr/nickname:*
+          nwr/old_name
+          nwr/old_name:*
+          nwr/historic_name
+          nwr/historic_name:*
+          nwr/former_name
+          nwr/former_name:*
+          nwr/previous_name
+          nwr/previous_name:*
+          nwr/bridge:name
+          nwr/bridge:name:*
+          nwr/tunnel:name
+          nwr/tunnel:name:*
+          nwr/was:name*
+          nwr/abandoned:name*
+          nwr/disused:name*
+          nwr/demolished:name*
+          nwr/razed:name*
+          nwr/removed:name*
+          nwr/destroyed:name*
+          nwr/proposed:name*
+          nwr/construction:name*
+          nwr/*name
+          EOF
+
+      - name: Scan one exact block-aligned source segment
+        id: segment
+        if: ${{ steps.mode.outputs.noop != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          start='${{ steps.mode.outputs.start }}'
+          root=artifacts/osm-full-history-99pct
+          state=.proof-state/osm-history/md5_state.json
+          mkdir -p "$root/shards" .proof-state/osm-history
+
+          if [ "$start" -gt 0 ]; then
+            python - <<'PY'
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'scripts')
+          from pbf_range_segment import source_header
+          Path('artifacts/osm-full-history-99pct/header.pbf').write_bytes(source_header(os.environ['HISTORY_URL']))
+          PY
+          fi
+
+          rm -f "$root/md5.pipe"
+          mkfifo "$root/md5.pipe"
+          python scripts/resumable_md5.py --state "$state" --start-offset "$start" < "$root/md5.pipe" &
+          md5_pid=$!
+
+          set +e
+          python scripts/pbf_range_segment.py "$HISTORY_URL" \
+            --start-offset "$start" --max-bytes "$SEGMENT_BYTES" \
+            --manifest "$root/range_manifest.json" \
+            | tee "$root/md5.pipe" \
+            | { if [ "$start" -eq 0 ]; then cat; else cat "$root/header.pbf" -; fi; } \
+            | osmium tags-filter -R -F pbf -f opl -e name_filters.txt - \
+            | python scripts/shard_osm_opl_stream.py --shards 4 --out "$root/shards" \
+                --source-label OSM-full-history-260810 --history
+          pipeline_status=("${PIPESTATUS[@]}")
+          wait "$md5_pid"
+          md5_rc=$?
+          set -e
+          rm -f "$root/md5.pipe"
+
+          # The only recoverable scanner status is code 8 from the final shard
+          # process, and only when every upstream stage and the byte-exact MD5
+          # updater succeeded. Then reclassify ONLY the known locked-font
+          # coverage exception; any other rendering failure stays fatal.
+          upstream_bad=0
+          for idx in 0 1 2 3; do
+            if [ "${pipeline_status[$idx]}" -ne 0 ]; then upstream_bad=1; fi
+          done
+          scanner_rc="${pipeline_status[4]}"
+          if [ "$md5_rc" -ne 0 ] || [ "$upstream_bad" -ne 0 ]; then
+            echo "segment pipeline failed upstream: statuses=${pipeline_status[*]} md5=$md5_rc" >&2
+            exit 8
+          fi
+          if [ "$scanner_rc" -eq 8 ]; then
+            python scripts/quarantine_locked_font_failures.py --shards-root "$root/shards" --shards 4
+            scanner_rc=0
+          fi
+          if [ "$scanner_rc" -ne 0 ]; then
+            echo "segment scanner failed: statuses=${pipeline_status[*]} md5=$md5_rc" >&2
+            exit 8
+          fi
+
+      - name: Verify segment handoff and merge shard evidence
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          start='${{ steps.mode.outputs.start }}'
+          if [ '${{ steps.mode.outputs.noop }}' = true ]; then
+            end="$start"
+            total="$(cat .proof-state/osm-history/total_bytes.txt)"
+            complete=true
+          else
+            root=artifacts/osm-full-history-99pct
+            read -r end total complete < <(python - <<'PY'
+          import json
+          m=json.load(open('artifacts/osm-full-history-99pct/range_manifest.json'))
+          print(int(m['end_offset']), int(m['total_bytes']), str(bool(m['source_complete'])).lower())
+          PY
+            )
+            python - <<'PY'
+          import json
+          rm=json.load(open('artifacts/osm-full-history-99pct/range_manifest.json'))
+          md=json.load(open('.proof-state/osm-history/md5_state.json'))
+          if int(md.get('bytes_hashed',-1)) != int(rm['end_offset']):
+              raise SystemExit(f"MD5 state offset {md.get('bytes_hashed')} != range end {rm['end_offset']}")
+          PY
+            printf '%s\n' "$end" > .proof-state/osm-history/next_offset.txt
+            printf '%s\n' "$total" > .proof-state/osm-history/total_bytes.txt
+            python scripts/merge_osm_history_segment.py \
+              --root "$root" --shards 4 --range-manifest "$root/range_manifest.json" \
+              --md5-state .proof-state/osm-history/md5_state.json
+          fi
+          echo "start=$start" >> "$GITHUB_OUTPUT"
+          echo "end=$end" >> "$GITHUB_OUTPUT"
+          echo "total=$total" >> "$GITHUB_OUTPUT"
+          echo "complete=$complete" >> "$GITHUB_OUTPUT"
+
+      - name: Upload segment proof evidence
+        if: ${{ steps.mode.outputs.noop != 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: osm-history-segment-${{ steps.meta.outputs.start }}-${{ steps.meta.outputs.end }}
+          path: artifacts/osm-full-history-99pct/segment/
+          retention-days: 30
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Upload tiny continuation state
+        uses: actions/upload-artifact@v4
+        with:
+          name: osm-history-state-${{ inputs.segment_id }}
+          path: .proof-state/osm-history/
+          retention-days: 30
+          if-no-files-found: error
+          overwrite: true
