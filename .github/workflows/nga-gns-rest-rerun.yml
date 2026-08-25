@@ -5,207 +5,158 @@ on:
     branches: [agent/osm-africa-mirror-palindrome-scan]
     paths:
       - '.github/workflows/nga-gns-rest-rerun.yml'
-      - 'scripts/scan_osm_all_name_opl.py'
-      - 'scripts/shard_osm_opl_stream.py'
-      - 'scripts/http_range_stream.py'
-      - 'scripts/palindrome_safety.py'
-      - 'scripts/scan_mirror_palindromes.py'
-      - 'requirements.txt'
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
 
-env:
-  PYTHONUNBUFFERED: '1'
-  HISTORY_URL: https://planet.openstreetmap.org/pbf/full-history/history-260810.osm.pbf
-  HISTORY_MD5_URL: https://planet.openstreetmap.org/pbf/full-history/history-260810.osm.pbf.md5
+concurrency:
+  group: osm-full-history-99pct-sequential-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  osm-full-history-99pct-repair:
+  seg01:
+    uses: ./.github/workflows/osm-history-segment-worker.yml
+    with:
+      segment_id: '01'
+      start_offset: '0'
+      prior_state_artifact: ''
+
+  seg02:
+    needs: seg01
+    uses: ./.github/workflows/osm-history-segment-worker.yml
+    with:
+      segment_id: '02'
+      start_offset: ${{ needs.seg01.outputs.end_offset }}
+      prior_state_artifact: osm-history-state-01
+
+  seg03:
+    needs: seg02
+    uses: ./.github/workflows/osm-history-segment-worker.yml
+    with:
+      segment_id: '03'
+      start_offset: ${{ needs.seg02.outputs.end_offset }}
+      prior_state_artifact: osm-history-state-02
+
+  seg04:
+    needs: seg03
+    uses: ./.github/workflows/osm-history-segment-worker.yml
+    with:
+      segment_id: '04'
+      start_offset: ${{ needs.seg03.outputs.end_offset }}
+      prior_state_artifact: osm-history-state-03
+
+  seg05:
+    needs: seg04
+    uses: ./.github/workflows/osm-history-segment-worker.yml
+    with:
+      segment_id: '05'
+      start_offset: ${{ needs.seg04.outputs.end_offset }}
+      prior_state_artifact: osm-history-state-04
+
+  seg06:
+    needs: seg05
+    uses: ./.github/workflows/osm-history-segment-worker.yml
+    with:
+      segment_id: '06'
+      start_offset: ${{ needs.seg05.outputs.end_offset }}
+      prior_state_artifact: osm-history-state-05
+
+  seg07:
+    needs: seg06
+    uses: ./.github/workflows/osm-history-segment-worker.yml
+    with:
+      segment_id: '07'
+      start_offset: ${{ needs.seg06.outputs.end_offset }}
+      prior_state_artifact: osm-history-state-06
+
+  seg08:
+    needs: seg07
+    uses: ./.github/workflows/osm-history-segment-worker.yml
+    with:
+      segment_id: '08'
+      start_offset: ${{ needs.seg07.outputs.end_offset }}
+      prior_state_artifact: osm-history-state-07
+
+  seg09:
+    needs: seg08
+    uses: ./.github/workflows/osm-history-segment-worker.yml
+    with:
+      segment_id: '09'
+      start_offset: ${{ needs.seg08.outputs.end_offset }}
+      prior_state_artifact: osm-history-state-08
+
+  seg10:
+    needs: seg09
+    uses: ./.github/workflows/osm-history-segment-worker.yml
+    with:
+      segment_id: '10'
+      start_offset: ${{ needs.seg09.outputs.end_offset }}
+      prior_state_artifact: osm-history-state-09
+
+  seg11:
+    needs: seg10
+    uses: ./.github/workflows/osm-history-segment-worker.yml
+    with:
+      segment_id: '11'
+      start_offset: ${{ needs.seg10.outputs.end_offset }}
+      prior_state_artifact: osm-history-state-10
+
+  seg12:
+    needs: seg11
+    uses: ./.github/workflows/osm-history-segment-worker.yml
+    with:
+      segment_id: '12'
+      start_offset: ${{ needs.seg11.outputs.end_offset }}
+      prior_state_artifact: osm-history-state-11
+
+  consolidate:
+    needs: seg12
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Install optimized scanner dependencies
-        run: |
-          set -euo pipefail
-          sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
-            osmium-tool fontconfig fonts-noto-core fonts-noto-extra fonts-noto-cjk libicu-dev pkg-config
-          python -m pip install -r requirements.txt requests==2.34.2
 
-      - name: Build broad feature-name safety filter
-        run: |
-          cat > name_filters.txt <<'EOF'
-          # High-confidence OSM feature-name families.
-          nwr/name
-          nwr/name:*
-          nwr/official_name
-          nwr/official_name:*
-          nwr/loc_name
-          nwr/loc_name:*
-          nwr/alt_name
-          nwr/alt_name:*
-          nwr/short_name
-          nwr/short_name:*
-          nwr/int_name
-          nwr/int_name:*
-          nwr/nat_name
-          nwr/nat_name:*
-          nwr/reg_name
-          nwr/reg_name:*
-          nwr/full_name
-          nwr/full_name:*
-          nwr/long_name
-          nwr/long_name:*
-          nwr/ref_name
-          nwr/ref_name:*
-          nwr/nickname
-          nwr/nickname:*
-          nwr/old_name
-          nwr/old_name:*
-          nwr/historic_name
-          nwr/historic_name:*
-          nwr/former_name
-          nwr/former_name:*
-          nwr/previous_name
-          nwr/previous_name:*
-          nwr/bridge:name
-          nwr/bridge:name:*
-          nwr/tunnel:name
-          nwr/tunnel:name:*
-          # Historical/lifecycle namespaces.
-          nwr/was:name*
-          nwr/abandoned:name*
-          nwr/disused:name*
-          nwr/demolished:name*
-          nwr/razed:name*
-          nwr/removed:name*
-          nwr/destroyed:name*
-          nwr/proposed:name*
-          nwr/construction:name*
-          # False-negative safety net.  The scanner quarantines unknown name-like
-          # namespaces and hard-excludes sorting_name/sort-only representations.
-          nwr/*name
-          EOF
+      - name: Restore final continuation state
+        uses: actions/download-artifact@v4
+        with:
+          name: osm-history-state-12
+          path: .proof-state/osm-history
 
-      - name: Stream frozen history-260810 and scan four persistent OPL shards
+      - name: Require exact source completion
         shell: bash
         run: |
           set -euo pipefail
-          root=artifacts/osm-full-history-99pct
-          mkdir -p "$root/shards"
-          curl -fsSL "$HISTORY_MD5_URL" | tee "$root/official.md5"
-          rm -f md5.pipe; mkfifo md5.pipe
-          (md5sum < md5.pipe | awk '{print $1}' > "$root/computed.md5") & MPID=$!
-          python scripts/http_range_stream.py "$HISTORY_URL" \
-            | tee md5.pipe \
-            | osmium tags-filter -R -F pbf -f opl -e name_filters.txt - \
-            | python scripts/shard_osm_opl_stream.py --shards 4 --out artifacts/osm-full-history-99pct/shards --source-label OSM-full-history-260810 --history
-          wait "$MPID"; rm -f md5.pipe
-          official="$(awk '{print $1}' "$root/official.md5")"
-          computed="$(cat "$root/computed.md5")"
-          test -n "$official" && test -n "$computed" && test "$official" = "$computed"
+          next="$(cat .proof-state/osm-history/next_offset.txt)"
+          total="$(cat .proof-state/osm-history/total_bytes.txt)"
+          test "$next" = "$total"
+          echo "Complete source coverage: $next / $total bytes"
 
-      - name: Merge shards and enforce proof assertions
+      - name: Download only this run's successful segment evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: osm-history-segment-*
+          path: artifacts/downloaded-segments
+          merge-multiple: false
+
+      - name: Verify source MD5 and consolidate exact contiguous proof
+        shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          import csv, json
-          from pathlib import Path
+          curl -fsSL --retry 8 \
+            https://planet.openstreetmap.org/pbf/full-history/history-260810.osm.pbf.md5 \
+            -o artifacts/official.md5
+          python scripts/consolidate_osm_history_segments.py \
+            --segments-dir artifacts/downloaded-segments \
+            --md5-state .proof-state/osm-history/md5_state.json \
+            --official-md5-file artifacts/official.md5 \
+            --out artifacts/osm-full-history-99pct-final
 
-          root = Path('artifacts/osm-full-history-99pct')
-          shards = sorted(p for p in (root/'shards').iterdir() if p.is_dir())
-          if len(shards) != 4:
-              raise SystemExit(f'expected 4 persistent shards, got {len(shards)}')
-          manifests = [json.loads((p/'scan_manifest.json').read_text()) for p in shards]
-
-          def rows(fn):
-              out=[]
-              for p in shards:
-                  q=p/fn
-                  if q.exists():
-                      with q.open(encoding='utf-8', newline='') as f:
-                          out.extend(csv.DictReader(f))
-              return out
-
-          def uniq(rs, keys):
-              d={}
-              for r in rs:
-                  d[tuple(r.get(k,'') for k in keys)] = r
-              return list(d.values())
-
-          textual = uniq(rows('all_textual_palindromes_ge9.csv'),
-              ['osm_type','osm_id','version','name_key','raw_name','normalized_name','case_locale','normalization_mode'])
-          mirrors = uniq(rows('mirror_results.csv'),
-              ['osm_type','osm_id','version','name_key','raw_name','normalized_name','case_locale','normalization_mode','render_case_variant','render_text'])
-          failures = uniq(rows('render_failures.csv'),
-              ['osm_type','osm_id','version','name_key','raw_name','normalized_name','case_locale','normalization_mode','render_case_variant','render_text'])
-          proof = [r for r in mirrors if str(r.get('mirror_pass','')).lower() in ('true','1','yes') and str(r.get('proof_eligible','')).lower() in ('true','1','yes') and str(r.get('quarantine','')).lower() not in ('true','1','yes')]
-          quarantine = [r for r in mirrors if str(r.get('mirror_pass','')).lower() in ('true','1','yes') and r not in proof]
-
-          def write(fn, rs):
-              fields=sorted({k for r in rs for k in r}) if rs else []
-              with (root/fn).open('w',encoding='utf-8',newline='') as f:
-                  w=csv.DictWriter(f,fieldnames=fields,extrasaction='ignore'); w.writeheader(); w.writerows(rs)
-          write('all_textual_palindromes_ge9.csv', textual)
-          write('mirror_results.csv', mirrors)
-          write('results.csv', proof)
-          write('quarantine_results.csv', quarantine)
-          write('render_failures.csv', failures)
-
-          official=(root/'official.md5').read_text().split()[0]
-          computed=(root/'computed.md5').read_text().strip()
-          key_counts={}; scope_counts={}; sort_counts={}
-          for m in manifests:
-              for dest, src in ((key_counts,'name_key_counts'),(scope_counts,'name_scope_counts'),(sort_counts,'sort_only_key_counts')):
-                  for k,v in m.get(src,{}).items(): dest[k]=dest.get(k,0)+int(v)
-          merged={
-              'source_label':'OSM-full-history-260810',
-              'source_url':'https://planet.openstreetmap.org/pbf/full-history/history-260810.osm.pbf',
-              'history_url':'https://planet.openstreetmap.org/pbf/full-history/history-260810.osm.pbf',
-              'official_md5':official,
-              'computed_md5':computed,
-              'official_md5_match': official == computed,
-              'history_file':True,
-              'all_node_way_relation_historical_versions':True,
-              'persistent_opl_shards':4,
-              'broad_name_like_filter':'nwr/*name (osmium leading-asterisk substring match) plus explicit documented families',
-              'broad_name_like_safety_filter':True,
-              'documented_extra_namespaces':['full_name','long_name','ref_name','nickname','bridge:name','tunnel:name','dated name:*','lifecycle/historical *:name families'],
-              'explicit_supplemental_namespaces':['full_name','long_name','ref_name','nickname','bridge:name','tunnel:name','dated name:*','lifecycle/historical *:name families'],
-              'sorting_name_excluded':True,
-              'unknown_name_like_keys_quarantined':True,
-              'icu_case_before_textual_rejection':True,
-              'permissive_punctuation_pass':True,
-              'permissive_punctuation_pass_quarantine_only':True,
-              'minimum_grapheme_length':9,
-              'unicode_grapheme_clusters':True,
-              'upper_length_bound':None,
-              'font_definition':'locked Noto Sans Regular; font-dependent result',
-              'visual_mirror_threshold':0.05,
-              'object_versions_scanned':sum(int(m.get('object_versions_scanned',0)) for m in manifests),
-              'name_values_scanned':sum(int(m.get('name_values_scanned',0)) for m in manifests),
-              'textual_palindrome_records_ge9':len(textual),
-              'mirror_render_variants':len(mirrors),
-              'mirror_pass_variants':len(proof),
-              'quarantine_mirror_pass_variants':len(quarantine),
-              'render_failures':len(failures),
-              'name_key_counts':key_counts,
-              'name_scope_counts':scope_counts,
-              'sort_only_key_counts':sort_counts,
-          }
-          (root/'scan_manifest.json').write_text(json.dumps(merged,ensure_ascii=False,indent=2)+'\n')
-          print(json.dumps(merged,ensure_ascii=False))
-          if official != computed: raise SystemExit('history source MD5 mismatch')
-          if failures: raise SystemExit(f'{len(failures)} render failures')
-          PY
-
-      - if: always()
+      - name: Upload final full-history proof artifact
         uses: actions/upload-artifact@v4
         with:
           name: osm-full-history-260810-99pct-feature-name-repair
-          path: artifacts/osm-full-history-99pct/
+          path: artifacts/osm-full-history-99pct-final/
           retention-days: 30
           if-no-files-found: error
