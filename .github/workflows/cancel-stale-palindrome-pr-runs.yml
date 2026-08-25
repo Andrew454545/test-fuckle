@@ -1,0 +1,38 @@
+name: Cancel Stale Palindrome PR Runs
+
+on:
+  push:
+    branches: [agent/osm-africa-mirror-palindrome-scan]
+    paths:
+      - '.github/workflows/cancel-stale-palindrome-pr-runs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  cancel-stale-pr-runs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      BRANCH: agent/osm-africa-mirror-palindrome-scan
+    steps:
+      - name: Cancel only active pull-request runs on the proof branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t ids < <(
+            gh api --paginate \
+              "repos/${REPO}/actions/runs?branch=${BRANCH}&event=pull_request&per_page=100" \
+              --jq '.workflow_runs[] | select(.status=="queued" or .status=="in_progress" or .status=="waiting" or .status=="pending" or .status=="requested") | .id' \
+              | sort -n -u
+          )
+          echo "Found ${#ids[@]} active pull_request workflow runs to cancel."
+          for id in "${ids[@]}"; do
+            echo "Cancelling stale PR run $id"
+            gh api --method POST "repos/${REPO}/actions/runs/${id}/cancel" >/dev/null || true
+          done
+          echo "Proof-specific push runs were intentionally untouched."
