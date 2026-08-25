@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   cancel-stale-pr-runs:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     timeout-minutes: 5
     env:
       GH_TOKEN: ${{ github.token }}
@@ -24,15 +24,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t ids < <(
+          ids="$(
             gh api --paginate \
               "repos/${REPO}/actions/runs?branch=${BRANCH}&event=pull_request&per_page=100" \
               --jq '.workflow_runs[] | select(.status=="queued" or .status=="in_progress" or .status=="waiting" or .status=="pending" or .status=="requested") | .id' \
               | sort -n -u
-          )
-          echo "Found ${#ids[@]} active pull_request workflow runs to cancel."
-          for id in "${ids[@]}"; do
+          )"
+          count="$(printf '%s\n' "$ids" | sed '/^$/d' | wc -l | tr -d ' ')"
+          echo "Found $count active pull_request workflow runs to cancel."
+          while IFS= read -r id; do
+            [ -n "$id" ] || continue
             echo "Cancelling stale PR run $id"
             gh api --method POST "repos/${REPO}/actions/runs/${id}/cancel" >/dev/null || true
-          done
+          done <<< "$ids"
           echo "Proof-specific push runs were intentionally untouched."
