@@ -63,6 +63,9 @@ def main() -> int:
 
         qpath = shard / "quarantine_results.csv"
         existing, _ = read_csv(qpath)
+        mirror_path = shard / "mirror_results.csv"
+        mirrors, mirror_fields = read_csv(mirror_path)
+        reclassified = []
         for r in failures:
             q = dict(r)
             q["quarantine"] = "True"
@@ -77,7 +80,10 @@ def main() -> int:
                 x for x in ((q.get("quarantine_reason") or "").strip(), extra) if x
             )
             existing.append(q)
+            mirrors.append(q)
+            reclassified.append(q)
         write_csv(qpath, existing)
+        write_csv(mirror_path, mirrors, mirror_fields)
         write_csv(failures_path, [], failure_fields)
 
         mpath = shard / "scan_manifest.json"
@@ -90,6 +96,7 @@ def main() -> int:
                 f"does not match CSV rows={len(failures)}"
             )
         manifest["render_failures"] = 0
+        manifest["mirror_render_variants"] = int(manifest.get("mirror_render_variants", 0)) + len(reclassified)
         manifest["render_unavailable_quarantine_rows"] = int(
             manifest.get("render_unavailable_quarantine_rows", 0)
         ) + len(failures)
