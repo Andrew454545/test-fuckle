@@ -5,111 +5,137 @@ on:
     branches: [agent/osm-africa-mirror-palindrome-scan]
     paths:
       - '.github/workflows/geonames-ascii-inline-supplement.yml'
-      - 'scripts/scan_geonames_ascii_inline.py'
-      - 'scripts/palindrome_safety.py'
-      - 'scripts/scan_mirror_palindromes.py'
-      - 'requirements.txt'
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
+
+concurrency:
+  group: geonames-ascii-inline-repair-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   geonames-ascii-inline:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 10
+    env:
+      PARENT_RUN_ID: '32609719078'
+      PARENT_ARTIFACT_ID: '9485759966'
+      PARENT_ARTIFACT_DIGEST: 'sha256:881355958944125fffbf46619e43a78d95ad7db536fd7e004c5dc33d3f16c9b6'
     steps:
-      - uses: actions/checkout@v4
-      - name: Install rendering dependencies
+      - name: Reuse the already-completed GeoNames scan artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends fontconfig fonts-noto-core fonts-noto-extra fonts-noto-cjk libicu-dev pkg-config
-          python -m pip install -r requirements.txt
-      - name: Download frozen-at-run GeoNames authoritative inputs
-        run: |
-          set -euo pipefail
-          mkdir -p data artifacts/geonames-ascii-inline
-          curl -fL --retry 8 https://download.geonames.org/export/dump/allCountries.zip -o data/allCountries.zip
-          curl -fL --retry 8 https://download.geonames.org/export/dump/alternateNamesV2.zip -o data/alternateNamesV2.zip
-          curl -fL --retry 8 https://download.geonames.org/export/dump/countryInfo.txt -o data/countryInfo.txt
-          curl -fL --retry 8 https://download.geonames.org/export/dump/featureCodes_en.txt -o data/featureCodes_en.txt
-          unzip -t data/allCountries.zip
-          unzip -t data/alternateNamesV2.zip
-          sha256sum data/* | tee artifacts/geonames-ascii-inline/source_sha256.txt
-      - name: Scan canonical, asciiname, inline alternatenames and alternateNamesV2 with ICU safety
-        run: |
-          set -euo pipefail
-          set +e
-          python scripts/scan_geonames_ascii_inline.py \
-            --all-countries data/allCountries.zip --alternate-names data/alternateNamesV2.zip \
-            --country-info data/countryInfo.txt \
-            --feature-codes data/featureCodes_en.txt --out artifacts/geonames-ascii-inline \
-            2>&1 | tee artifacts/geonames-ascii-inline/run.log
-          scan_rc=${PIPESTATUS[0]}
-          set -e
-          if [ "$scan_rc" -ne 0 ] && [ "$scan_rc" -ne 8 ]; then
-            exit "$scan_rc"
-          fi
-          if [ "$scan_rc" -eq 8 ]; then
-            python - <<'PY'
-          import csv, json
-          from pathlib import Path
-
-          root = Path('artifacts/geonames-ascii-inline')
-          fail_path = root / 'render_failures.csv'
-          if not fail_path.exists():
-              raise SystemExit('scanner returned render-failure status without render_failures.csv')
-
-          with fail_path.open(encoding='utf-8', newline='') as f:
-              failures = list(csv.DictReader(f))
-          unsupported = [r for r in failures if 'No Noto Sans Regular face covers this text' in (r.get('error') or '')]
-          other = [r for r in failures if r not in unsupported]
-          if not unsupported:
-              raise SystemExit('scanner returned render-failure status but no locked-font coverage failure was found')
-          if other:
-              raise SystemExit(f'{len(other)} non-font-coverage render failures remain; refusing to quarantine them automatically')
-
-          qpath = root / 'quarantine_results.csv'
-          existing = []
-          if qpath.exists():
-              with qpath.open(encoding='utf-8', newline='') as f:
-                  existing = list(csv.DictReader(f))
-          for r in unsupported:
-              r['quarantine'] = 'True'
-              r['proof_eligible'] = 'False'
-              r['render_unavailable'] = 'True'
-              r['mirror_pass'] = ''
-              reason = (r.get('quarantine_reason') or '').strip()
-              extra = 'locked Noto Sans Regular has no single covering face; manual representation review required'
-              r['quarantine_reason'] = '; '.join(x for x in (reason, extra) if x)
-              existing.append(r)
-
-          def write(path, rows, fallback=()):
-              fields = sorted({k for r in rows for k in r}) if rows else list(fallback)
-              with path.open('w', encoding='utf-8', newline='') as f:
-                  w = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore')
-                  w.writeheader(); w.writerows(rows)
-
-          write(qpath, existing)
-          write(fail_path, other, fallback=sorted({k for r in failures for k in r}))
-          mpath = root / 'scan_manifest.json'
-          m = json.loads(mpath.read_text(encoding='utf-8'))
-          m['render_failures'] = len(other)
-          m['render_unavailable_quarantine_rows'] = len(unsupported)
-          m['render_unavailable_quarantine_requires_manual_review'] = True
-          mpath.write_text(json.dumps(m, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-          print(json.dumps({'reclassified_locked_font_coverage_rows': len(unsupported), 'remaining_render_failures': len(other)}))
+          mkdir -p artifacts/geonames-ascii-inline
+          meta="$(curl -fsSL --retry 4 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${PARENT_ARTIFACT_ID}")"
+          python - "$PARENT_ARTIFACT_ID" "$PARENT_ARTIFACT_DIGEST" "$meta" <<'PY'
+          import json, sys
+          artifact_id, expected_digest, raw = sys.argv[1:]
+          m=json.loads(raw)
+          assert str(m['id']) == artifact_id, (m.get('id'), artifact_id)
+          assert m.get('expired') is False, 'parent proof artifact expired'
+          assert m.get('digest') == expected_digest, (m.get('digest'), expected_digest)
+          assert m.get('workflow_run',{}).get('id') == 32609719078, m.get('workflow_run')
+          print(json.dumps({'artifact_id':m['id'],'digest':m['digest'],'expired':m['expired']}))
           PY
-          fi
+          curl -fsSL --retry 4 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${PARENT_ARTIFACT_ID}/zip" \
+            -o parent.zip
+          unzip -q parent.zip -d artifacts/geonames-ascii-inline
+
+      - name: Deterministically quarantine the three locked-font-only failures
+        shell: bash
+        run: |
+          set -euo pipefail
           python - <<'PY'
-          import json
+          import csv, json, os
           from pathlib import Path
-          m = json.loads(Path('artifacts/geonames-ascii-inline/scan_manifest.json').read_text())
-          if int(m.get('render_failures', -1)) != 0:
-              raise SystemExit(f"GeoNames render failures remain: {m.get('render_failures')}")
+
+          root=Path('artifacts/geonames-ascii-inline')
+          manifest_path=root/'scan_manifest.json'
+          failure_path=root/'render_failures.csv'
+          results_path=root/'results.csv'
+          quarantine_path=root/'quarantine_results.csv'
+          for p in (manifest_path,failure_path,results_path,quarantine_path,root/'mirror_results.csv',root/'all_textual_palindromes_ge9.csv'):
+              if not p.exists(): raise SystemExit(f'missing parent artifact file: {p}')
+
+          manifest=json.loads(manifest_path.read_text(encoding='utf-8'))
+          expected={
+              'primary_feature_rows':13463819,
+              'alternate_name_rows':19062518,
+              'eligible_alternate_name_rows':16840121,
+              'canonical_name_values_scanned':13463819,
+              'asciiname_values_scanned':13463819,
+              'inline_alternatename_values_scanned':21403047,
+              'textual_palindrome_records_ge9':213,
+              'mirror_render_variants':694,
+              'mirror_pass_variants':18,
+              'render_failures':3,
+          }
+          for k,v in expected.items():
+              if int(manifest.get(k,-1)) != v:
+                  raise SystemExit(f'parent manifest assertion failed for {k}: {manifest.get(k)} != {v}')
+
+          before_results=results_path.read_bytes()
+          with failure_path.open(encoding='utf-8',newline='') as f:
+              reader=csv.DictReader(f); failures=list(reader); failure_fields=list(reader.fieldnames or [])
+          if len(failures) != 3: raise SystemExit(f'expected exactly 3 parent render failures, got {len(failures)}')
+          for r in failures:
+              if r.get('geonameid') != '338010' or r.get('source_field') != 'alternatenames_inline' or r.get('raw_name') != 'ayryٽyrya':
+                  raise SystemExit(f'unexpected render-failure row: {r}')
+              if 'No Noto Sans Regular face covers' not in (r.get('error') or ''):
+                  raise SystemExit(f'failure is not the known locked-font coverage class: {r.get("error")}')
+
+          existing=[]
+          if quarantine_path.stat().st_size > 2:
+              with quarantine_path.open(encoding='utf-8',newline='') as f:
+                  existing=list(csv.DictReader(f))
+          for r in failures:
+              q=dict(r)
+              q['quarantine']='True'; q['proof_eligible']='False'; q['render_unavailable']='True'; q['mirror_pass']=''
+              extra='locked Noto Sans Regular has no single covering face; representation excluded from font-dependent proof and retained for manual review'
+              q['quarantine_reason']='; '.join(x for x in ((q.get('quarantine_reason') or '').strip(),extra) if x)
+              existing.append(q)
+
+          qfields=sorted({k for r in existing for k in r})
+          with quarantine_path.open('w',encoding='utf-8',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=qfields,extrasaction='ignore'); w.writeheader(); w.writerows(existing)
+          with failure_path.open('w',encoding='utf-8',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=failure_fields,extrasaction='ignore'); w.writeheader()
+
+          manifest['render_failures']=0
+          manifest['render_unavailable_quarantine_rows']=3
+          manifest['render_unavailable_quarantine_requires_manual_review']=True
+          manifest['repair_kind']='postprocess-only; authoritative source rows were not rescanned'
+          manifest['repair_parent_run_id']=int(os.environ['PARENT_RUN_ID'])
+          manifest['repair_parent_artifact_id']=int(os.environ['PARENT_ARTIFACT_ID'])
+          manifest['repair_parent_artifact_digest']=os.environ['PARENT_ARTIFACT_DIGEST']
+          manifest['parent_scan_counts_revalidated']=expected
+          manifest_path.write_text(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+          (root/'repair_provenance.json').write_text(json.dumps({
+              'parent_run_id':int(os.environ['PARENT_RUN_ID']),
+              'parent_artifact_id':int(os.environ['PARENT_ARTIFACT_ID']),
+              'parent_artifact_digest':os.environ['PARENT_ARTIFACT_DIGEST'],
+              'repair':'reclassified exactly three locked-Noto-font render failures for GeoNames geonameid 338010; no source scan repeated',
+              'proof_results_unchanged':True,
+          },ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+          if results_path.read_bytes() != before_results:
+              raise SystemExit('proof results changed during postprocess-only repair')
+          print(json.dumps({'reused_parent_scan':True,'reclassified_locked_font_rows':3,'remaining_render_failures':0,'proof_results_unchanged':True}))
           PY
-      - if: always()
+
+      - name: Upload repaired proof supplement
         uses: actions/upload-artifact@v4
         with:
           name: geonames-ascii-inline-99pct-supplement
